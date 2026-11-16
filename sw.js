@@ -1,8 +1,9 @@
 // Service Worker: speichert die App für die Offline-Nutzung.
-const CACHE = '3d-viewer-v4';
+const CACHE = '3d-viewer-v5';
 const ASSETS = [
   './',
   './app.js',
+  './face.js',
   './icons/apple-touch-icon.png',
   './icons/icon-192.png',
   './icons/icon-512.png',
