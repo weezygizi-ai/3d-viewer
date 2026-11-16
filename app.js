@@ -209,6 +209,8 @@ function setModel(root, animations, name) {
   disposeModel();
   model = root;
   clips = animations;
+  baseClips = animations;
+  rigDirty = false;
   animFrozen = false;
 
   model.traverse((o) => {
@@ -441,6 +443,8 @@ const actions = {
   info: () => $('#info').classList.toggle('hidden'),
   edit: () => editor.toggle(),
   export: () => exportGLB(),
+  library: () => library.show(),
+  save: () => library.saveCurrent(),
   reset: () => resetView(),
   wireframe: () => {
     wireframe = !wireframe; setToolActive('wireframe', wireframe);
@@ -492,7 +496,7 @@ window.addEventListener('drop', (e) => {
 // ---------- iOS: Seiten-Zoom / Bounce verhindern ----------
 ['gesturestart', 'gesturechange', 'gestureend'].forEach((t) => document.addEventListener(t, (e) => e.preventDefault(), { passive: false }));
 document.addEventListener('touchmove', (e) => {
-  if (!e.target.closest('.panel, .bone-list, select, input[type=range]')) e.preventDefault();
+  if (!e.target.closest('.panel, .bone-list, .sheet, select, input[type=range]')) e.preventDefault();
 }, { passive: false });
 let lastTouchEnd = 0;
 document.addEventListener('touchend', (e) => {
@@ -547,8 +551,13 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 
 // ---------- Gelenk-Editor ----------
 let animFrozen = false; // true = Animation angehalten, damit bearbeitete Pose sichtbar bleibt
+let baseClips = [];     // Clips wie geladen; `clips` = ggf. an das bearbeitete Rig angepasst
+let rigDirty = false;   // Rig wurde geändert -> Clips beim nächsten Abspielen neu aufbauen
 const editor = (() => {
-  const st = { active: false, bones: [], editable: [], original: new Map(), selected: null, undo: [], mode: 'rotate', radius: 0.02 };
+  const st = {
+    active: false, bones: [], editable: [], original: new Map(), origInverses: new Map(),
+    selected: null, undo: [], mode: 'rotate', rigOnly: false, radius: 0.02, rigOps: [], addCount: 0,
+  };
   const tc = new TransformControls(camera, canvas);
   tc.setMode('rotate');
   tc.setSpace('local');
@@ -557,13 +566,15 @@ const editor = (() => {
   const tcHelper = tc.getHelper();
   scene.add(tcHelper);
   tc.addEventListener('dragging-changed', (e) => { controls.enabled = !e.value; });
-  tc.addEventListener('mouseDown', () => { if (st.selected) pushUndo([st.selected]); });
+  tc.addEventListener('mouseDown', () => { if (st.selected) beginTransform(); });
+  tc.addEventListener('objectChange', () => { if (rigOp) updateRig(); });
+  tc.addEventListener('mouseUp', () => endTransform());
 
   const jointsGroup = new THREE.Group();
-  jointsGroup.renderOrder = 998;
   scene.add(jointsGroup);
   const jointGeo = new THREE.SphereGeometry(1, 12, 8);
   const jointMat = new THREE.MeshBasicMaterial({ color: 0x5b7cff, depthTest: false, transparent: true, opacity: 0.9 });
+  const jointAddMat = new THREE.MeshBasicMaterial({ color: 0x2ecc71, depthTest: false, transparent: true, opacity: 0.95 });
   const jointSelMat = new THREE.MeshBasicMaterial({ color: 0xffb020, depthTest: false, transparent: true, opacity: 1 });
   let jointMeshes = [];
   let ownSkeleton = null;
@@ -571,8 +582,20 @@ const editor = (() => {
   const list = $('#bone-list');
   const search = $('#bone-search');
   const label = $('#bone-current');
-
   const boneName = (b, i) => b.name || `Knochen ${i + 1}`;
+  const isAdded = (b) => !!(b && b.userData && b.userData.viewerAdded);
+
+  // ---- Hilfen: Skelette ----
+  function skeletons() {
+    const set = new Set();
+    model?.traverse((o) => { if (o.isSkinnedMesh && o.skeleton) set.add(o.skeleton); });
+    return [...set];
+  }
+  function resizeSkeleton(sk) {
+    sk.boneMatrices = new Float32Array(sk.bones.length * 16);
+    if (sk.boneTexture) { sk.boneTexture.dispose(); sk.boneTexture = null; }
+  }
+  function isDescendantOrSelf(b, root) { for (let o = b; o; o = o.parent) if (o === root) return true; return false; }
 
   function collectBones() {
     const set = new Set();
@@ -582,49 +605,234 @@ const editor = (() => {
     });
     return [...set];
   }
-  function snap(b) { return { b, p: b.position.clone(), q: b.quaternion.clone(), s: b.scale.clone() }; }
-  function restore(r) { r.b.position.copy(r.p); r.b.quaternion.copy(r.q); r.b.scale.copy(r.s); r.b.updateMatrixWorld(true); }
-
-  function capture() {
-    st.bones = model ? collectBones() : [];
+  function refreshBoneLists() {
+    st.bones = collectBones();
     // FBX-Eigenheit: gleichnamige Kind-Knochen (zweites Mesh) nicht doppelt anzeigen
     st.editable = st.bones.filter((b) => !(b.name && b.parent && b.parent.isBone && b.parent.name === b.name));
+  }
+
+  // ---- Snapshots / Undo ----
+  function snap(b) { return { b, p: b.position.clone(), q: b.quaternion.clone(), s: b.scale.clone() }; }
+  function restore(r) { r.b.position.copy(r.p); r.b.quaternion.copy(r.q); r.b.scale.copy(r.s); r.b.updateMatrixWorld(true); }
+  function fullState() {
+    return {
+      type: 'state',
+      bones: st.bones.map(snap),
+      inverses: skeletons().map((sk) => [sk, sk.boneInverses.map((m) => m.clone())]),
+      rigOps: st.rigOps.slice(),
+    };
+  }
+  function applyState(s) {
+    s.bones.forEach(restore);
+    for (const [sk, inv] of s.inverses) if (sk.boneInverses.length === inv.length) inv.forEach((m, i) => sk.boneInverses[i].copy(m));
+    st.rigOps = s.rigOps.slice();
+    rigDirty = true;
+  }
+  function capture() {
+    refreshBoneLists();
     st.original = new Map(st.bones.map((b) => [b, snap(b)]));
+    st.origInverses = new Map(skeletons().map((sk) => [sk, sk.boneInverses.map((m) => m.clone())]));
     st.undo = [];
     st.selected = null;
-    updateUndoBtn();
+    st.rigOps = [];
+    st.rigOnly = false; // bei jedem neuen Modell sicherheitshalber aus
+    st.addCount = st.bones.filter(isAdded).length;
+    updateButtons();
   }
-
-  function pushUndo(bones) {
-    st.undo.push(bones.map(snap));
-    if (st.undo.length > 100) st.undo.shift();
-    updateUndoBtn();
+  function pushUndo(entry) {
+    st.undo.push(entry || fullState());
+    if (st.undo.length > 60) st.undo.shift();
+    updateButtons();
   }
   function undo() {
-    const step = st.undo.pop();
-    if (step) step.forEach(restore);
-    updateUndoBtn();
+    const e = st.undo.pop();
+    if (!e) return;
+    if (e.type === 'state') applyState(e);
+    else if (e.type === 'add') removeBoneInternal(e.bone);
+    else if (e.type === 'delete') e.records.slice().reverse().forEach(reinsertBone);
+    afterStructureChange(st.selected && st.selected.parent ? st.selected : null);
+    updateButtons();
   }
-  function updateUndoBtn() { const b = $('#ed-undo'); if (b) b.disabled = !st.undo.length; }
+
+  // ---- Transformieren (Gizmo und Code nutzen denselben Pfad) ----
+  let rigOp = null; // { bone, p0, q0, entries: [{ sk, i, W0, I0 }] }
+  function beginTransform() {
+    pushUndo();
+    if (!st.rigOnly) return;
+    const bone = st.selected;
+    model.updateMatrixWorld(true);
+    const entries = [];
+    for (const sk of skeletons()) {
+      sk.bones.forEach((b, i) => {
+        if (b && isDescendantOrSelf(b, bone)) entries.push({ sk, i, W0: b.matrixWorld.clone(), I0: sk.boneInverses[i].clone() });
+      });
+    }
+    rigOp = { bone, p0: bone.position.clone(), q0: bone.quaternion.clone(), entries };
+  }
+  const _m = new THREE.Matrix4();
+  function updateRig() {
+    if (!rigOp) return;
+    rigOp.bone.updateMatrixWorld(true);
+    // neue inverse Bindmatrix: inv(W_neu) * W_alt * Inv_alt  -> Mesh bleibt unverändert
+    for (const e of rigOp.entries) {
+      const b = e.sk.bones[e.i];
+      _m.copy(b.matrixWorld).invert().multiply(e.W0).multiply(e.I0);
+      e.sk.boneInverses[e.i].copy(_m);
+    }
+  }
+  function endTransform() {
+    if (!rigOp) return;
+    updateRig();
+    const b = rigOp.bone;
+    const dp = b.position.clone().sub(rigOp.p0);
+    const dq = rigOp.q0.clone().invert().multiply(b.quaternion).normalize();
+    if (dp.lengthSq() > 1e-14 || Math.abs(dq.w) < 0.999999999) {
+      // F = L1^-1 * L0 (lokale Änderung des Knochen-Rahmens)
+      const L0 = new THREE.Matrix4().compose(rigOp.p0, rigOp.q0, new THREE.Vector3(1, 1, 1));
+      const L1 = new THREE.Matrix4().compose(b.position, b.quaternion, new THREE.Vector3(1, 1, 1));
+      const F = L1.clone().invert().multiply(L0);
+      const Finv = F.clone().invert();
+      model.updateMatrixWorld(true);
+      const WBinv = b.matrixWorld.clone().invert();
+      const desc = new Map();
+      b.traverse((x) => {
+        if (x === b || !x.isBone) return;
+        const R = WBinv.clone().multiply(x.matrixWorld); // Kette B -> X
+        const K = R.clone().invert().multiply(F).multiply(R);
+        desc.set(x, { parent: x.parent, K, Kinv: R.clone().invert().multiply(Finv).multiply(R), restP: x.position.clone(), restQ: x.quaternion.clone() });
+      });
+      st.rigOps.push({ bone: b, dp, dq, F, identityF: false, desc });
+      rigDirty = true;
+    }
+    rigOp = null;
+  }
+  function transformSelected(fn) {
+    if (!st.selected) return false;
+    beginTransform();
+    fn(st.selected);
+    st.selected.updateMatrixWorld(true);
+    if (rigOp) updateRig();
+    endTransform();
+    return true;
+  }
+  function rotateSelected(axis, degrees) {
+    return transformSelected((b) => b.rotateOnAxis(new THREE.Vector3(...axis).normalize(), THREE.MathUtils.degToRad(degrees)));
+  }
+  function translateSelected(vec) {
+    return transformSelected((b) => b.position.add(new THREE.Vector3(...vec)));
+  }
 
   function resetJoint() {
-    if (!st.selected) { showError('Bitte zuerst ein Gelenk auswählen.', 2500); return; }
-    pushUndo([st.selected]);
-    restore(st.original.get(st.selected));
+    const b = st.selected;
+    if (!b) { showError('Bitte zuerst ein Gelenk auswählen.', 2500); return; }
+    const o = st.original.get(b);
+    if (!o) return;
+    transformSelected(() => { b.position.copy(o.p); b.quaternion.copy(o.q); b.scale.copy(o.s); });
   }
   function resetPose() {
     if (!st.bones.length) return;
-    pushUndo(st.bones);
+    pushUndo();
     st.original.forEach(restore);
+    if (st.rigOnly) {
+      // komplettes Rig zurücksetzen (Bindmatrizen + Anpassungen)
+      for (const [sk, inv] of st.origInverses) inv.forEach((m, i) => sk.boneInverses[i] && sk.boneInverses[i].copy(m));
+      st.rigOps = [];
+      rigDirty = true;
+    }
   }
 
+  // ---- Knochen hinzufügen / löschen ----
+  function addBone() {
+    const parent = st.selected;
+    if (!parent) { showError('Bitte zuerst das Eltern-Gelenk auswählen.', 2500); return null; }
+    model.updateMatrixWorld(true);
+    const pw = parent.getWorldPosition(new THREE.Vector3());
+    let dir = null;
+    const childBone = parent.children.find((c) => c.isBone);
+    if (childBone) dir = childBone.getWorldPosition(new THREE.Vector3()).sub(pw);
+    else if (parent.parent && parent.parent.isBone) dir = pw.clone().sub(parent.parent.getWorldPosition(new THREE.Vector3()));
+    if (!dir || dir.lengthSq() < 1e-12) dir = new THREE.Vector3(0, 1, 0);
+    dir.normalize();
+    const size = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3());
+    const len = Math.max(size.x, size.y, size.z) * 0.08 || 0.1;
+    const bone = new THREE.Bone();
+    st.addCount++;
+    bone.name = `Neuer_Knochen_${st.addCount}`;
+    bone.userData.viewerAdded = true;
+    bone.position.copy(parent.worldToLocal(pw.clone().addScaledVector(dir, len)));
+    parent.add(bone);
+    bone.updateMatrixWorld(true);
+    // in alle Skelette aufnehmen, die das Eltern-Gelenk enthalten; Bindung relativ zum Eltern-Gelenk
+    const targets = skeletons().filter((sk) => sk.bones.includes(parent));
+    const fallback = targets.length ? targets : skeletons().slice(0, 1);
+    for (const sk of fallback) {
+      const pi = sk.bones.indexOf(parent);
+      const inv = new THREE.Matrix4();
+      if (pi >= 0) inv.copy(bone.matrixWorld).invert().multiply(parent.matrixWorld).multiply(sk.boneInverses[pi]);
+      else inv.copy(bone.matrixWorld).invert();
+      sk.bones.push(bone);
+      sk.boneInverses.push(inv);
+      resizeSkeleton(sk);
+    }
+    st.original.set(bone, snap(bone));
+    pushUndo({ type: 'add', bone });
+    afterStructureChange(bone);
+    return bone;
+  }
+  function removeBoneInternal(bone) {
+    const record = { bone, parent: bone.parent, skels: [] };
+    for (const sk of skeletons()) {
+      const i = sk.bones.indexOf(bone);
+      if (i >= 0) {
+        record.skels.push({ sk, i, inv: sk.boneInverses[i].clone() });
+        sk.bones.splice(i, 1); sk.boneInverses.splice(i, 1);
+        resizeSkeleton(sk);
+      }
+    }
+    bone.parent && bone.parent.remove(bone);
+    st.rigOps = st.rigOps.filter((op) => op.bone !== bone);
+    if (st.selected === bone) select(null);
+    return record;
+  }
+  function reinsertBone(r) {
+    r.parent.add(r.bone);
+    for (const { sk, i, inv } of r.skels) {
+      sk.bones.splice(i, 0, r.bone); sk.boneInverses.splice(i, 0, inv);
+      resizeSkeleton(sk);
+    }
+  }
+  function deleteBone() {
+    const b = st.selected;
+    if (!isAdded(b)) { showError('Nur selbst hinzugefügte Knochen können gelöscht werden.', 3000); return; }
+    let ok = true;
+    b.traverse((o) => { if (o !== b && o.isBone && !isAdded(o)) ok = false; });
+    if (!ok) { showError('Dieser Knochen hat Original-Knochen als Kinder und kann nicht gelöscht werden.', 3500); return; }
+    // Kinder (auch hinzugefügte) zuerst entfernen – von unten nach oben
+    const chain = [];
+    b.traverse((o) => { if (o.isBone) chain.push(o); });
+    const parent = b.parent;
+    const records = chain.reverse().map(removeBoneInternal);
+    // Undo: in umgekehrter Reihenfolge wieder einfügen
+    pushUndo({ type: 'delete', records });
+    afterStructureChange(parent && parent.isBone ? parent : null);
+  }
+
+  function afterStructureChange(selectBone) {
+    refreshBoneLists();
+    rigDirty = true;
+    if (st.active) { buildJoints(); buildList(); select(selectBone && st.editable.includes(selectBone) ? selectBone : null); }
+    if (skeletonHelper) { toggleSkeleton(false); toggleSkeleton(true); }
+    if (model) buildInfo($('#filename').textContent);
+  }
+
+  // ---- Anzeige ----
   function buildJoints() {
     clearJoints();
     const box = new THREE.Box3().setFromObject(model);
     const size = box.getSize(new THREE.Vector3());
     st.radius = Math.max(size.x, size.y, size.z) * 0.012 || 0.02;
     jointMeshes = st.editable.map((b) => {
-      const m = new THREE.Mesh(jointGeo, jointMat);
+      const m = new THREE.Mesh(jointGeo, isAdded(b) ? jointAddMat : jointMat);
       m.scale.setScalar(st.radius);
       m.renderOrder = 998;
       m.userData.bone = b;
@@ -643,12 +851,11 @@ const editor = (() => {
     jointMeshes = [];
     if (ownSkeleton) { scene.remove(ownSkeleton); ownSkeleton.dispose(); ownSkeleton = null; }
   }
-
   function buildList() {
     list.innerHTML = '';
     st.editable.forEach((b, i) => {
       const li = document.createElement('button');
-      li.className = 'bone-item';
+      li.className = 'bone-item' + (isAdded(b) ? ' added' : '');
       li.textContent = boneName(b, i);
       li.dataset.index = i;
       li.addEventListener('click', () => { select(b); $('#bone-picker').classList.add('hidden'); });
@@ -665,17 +872,39 @@ const editor = (() => {
   function select(b) {
     st.selected = b;
     if (b) tc.attach(b); else tc.detach();
-    jointMeshes.forEach((m) => { m.material = m.userData.bone === b ? jointSelMat : jointMat; m.scale.setScalar(st.radius * (m.userData.bone === b ? 1.5 : 1)); });
+    jointMeshes.forEach((m) => {
+      const sel = m.userData.bone === b;
+      m.material = sel ? jointSelMat : isAdded(m.userData.bone) ? jointAddMat : jointMat;
+      m.scale.setScalar(st.radius * (sel ? 1.5 : 1));
+    });
     const i = st.editable.indexOf(b);
     label.textContent = b ? boneName(b, i) : 'Gelenk wählen …';
     for (const el of list.children) el.classList.toggle('selected', +el.dataset.index === i);
+    updateButtons();
   }
-
+  function updateButtons() {
+    const u = $('#ed-undo'); if (u) u.disabled = !st.undo.length;
+    const d = $('#ed-del-bone'); if (d) d.disabled = !isAdded(st.selected);
+    const hint = $('#ed-hint');
+    if (hint) {
+      let t = '';
+      if (isAdded(st.selected)) t = 'Neuer Knochen: noch ohne Gewichtung – er bewegt das Mesh nicht.';
+      else if (st.rigOnly) t = 'Nur Rig: Gelenke bewegen, das Mesh bleibt stehen.';
+      hint.textContent = t;
+      hint.classList.toggle('hidden', !t);
+    }
+  }
   function setMode(mode) {
     st.mode = mode;
     tc.setMode(mode);
     $('#ed-rotate').classList.toggle('active', mode === 'rotate');
     $('#ed-translate').classList.toggle('active', mode === 'translate');
+  }
+  function setRigOnly(on) {
+    st.rigOnly = !!on;
+    $('#ed-rig').classList.toggle('active', st.rigOnly);
+    $('#ed-rig').setAttribute('aria-pressed', st.rigOnly);
+    updateButtons();
   }
 
   function enter() {
@@ -691,19 +920,23 @@ const editor = (() => {
     buildList();
     select(null);
     setMode(st.mode);
+    setRigOnly(st.rigOnly);
     $('#editor').classList.remove('hidden');
     $('#anim').classList.add('hidden');
+    document.body.classList.add('editing');
     setToolActive('edit', true);
   }
   function exit(silent) {
     if (!st.active && !silent) return;
     st.active = false;
+    rigOp = null;
     tc.detach();
     tc.enabled = false;
     controls.enabled = true;
     clearJoints();
     $('#editor').classList.add('hidden');
     $('#bone-picker').classList.add('hidden');
+    document.body.classList.remove('editing');
     if (clips.length && model) $('#anim').classList.remove('hidden');
     setToolActive('edit', false);
   }
@@ -736,22 +969,96 @@ const editor = (() => {
     for (const m of jointMeshes) m.userData.bone.getWorldPosition(m.position);
   }
 
-  // Programmatische Bearbeitung (gleicher Pfad wie das Gizmo: Undo-Schritt + Knochen-Transform)
-  function rotateSelected(axis, degrees) {
-    if (!st.selected) return false;
-    pushUndo([st.selected]);
-    st.selected.rotateOnAxis(new THREE.Vector3(...axis).normalize(), THREE.MathUtils.degToRad(degrees));
-    st.selected.updateMatrixWorld(true);
-    return true;
+  // ---- Animation an das bearbeitete Rig anpassen ----
+  // Jede "Nur Rig"-Operation an Knochen B wird gespeichert. Beim Abspielen/Export:
+  //  - B behält seine Rotationen (plus Rig-Drehung) und nutzt den neuen Drehpunkt (Positions-Offset)
+  //  - alle Nachkommen X: L_X'(t) = K_parent * L_X(t) * K_X^-1, damit ihre Segmente starr der neuen
+  //    Bewegung von B folgen (K_B = F = L1^-1 * L0, K_X = R_X^-1 * F * R_X; R_X = Kette B -> X)
+  function adaptClips(base) {
+    if (!st.rigOps.length || !model) return base;
+    let out = base;
+    for (const op of st.rigOps) out = out.map((clip) => applyOp(clip, op));
+    return out;
   }
-  function selectByName(name) {
-    const b = st.editable.find((x) => x.name === name);
-    if (b) select(b);
-    return !!b;
+  const _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _one = new THREE.Vector3(1, 1, 1);
+  const _M = new THREE.Matrix4(), _L = new THREE.Matrix4();
+  function applyOp(clip, op) {
+    const byNode = new Map(); // node -> { position, quaternion } (Index der Tracks)
+    clip.tracks.forEach((tr, i) => {
+      const pb = THREE.PropertyBinding.parseTrackName(tr.name);
+      if (pb.propertyName !== 'position' && pb.propertyName !== 'quaternion') return;
+      const node = THREE.PropertyBinding.findNode(model, pb.nodeName);
+      if (!node) return;
+      const e = byNode.get(node) || { nodeName: pb.nodeName };
+      e[pb.propertyName] = i;
+      byNode.set(node, e);
+    });
+    const tracks = clip.tracks.slice();
+    let changed = false;
+    // 1) B selbst
+    const eb = byNode.get(op.bone);
+    if (eb) {
+      if (eb.position !== undefined && op.dp.lengthSq() > 1e-14) {
+        const tr = tracks[eb.position].clone();
+        const perKey = tr.values.length / tr.times.length, cubic = perKey === 9;
+        for (let k = 0; k < tr.times.length; k++) {
+          const o = k * perKey + (cubic ? 3 : 0);
+          tr.values[o] += op.dp.x; tr.values[o + 1] += op.dp.y; tr.values[o + 2] += op.dp.z;
+        }
+        tracks[eb.position] = tr; changed = true;
+      }
+      if (eb.quaternion !== undefined && Math.abs(op.dq.w) < 0.999999999) {
+        const tr = tracks[eb.quaternion].clone();
+        for (let o = 0; o < tr.values.length; o += 4) { _q.fromArray(tr.values, o).multiply(op.dq); _q.toArray(tr.values, o); }
+        tracks[eb.quaternion] = tr; changed = true;
+      }
+    }
+    // 2) Nachkommen
+    if (!op.identityF) {
+      const extra = [];
+      for (const [x, info] of op.desc) {
+        const e = byNode.get(x);
+        if (!e || e.quaternion === undefined && e.position === undefined) continue;
+        const Kp = info.parent === op.bone ? op.F : op.desc.get(info.parent)?.K;
+        if (!Kp) continue;
+        const pTr = e.position !== undefined ? tracks[e.position] : null;
+        const qTr = e.quaternion !== undefined ? tracks[e.quaternion] : null;
+        const tset = new Set();
+        if (pTr) pTr.times.forEach((t) => tset.add(t));
+        if (qTr) qTr.times.forEach((t) => tset.add(t));
+        const times = Float32Array.from([...tset].sort((a, b) => a - b));
+        const pI = pTr && pTr.createInterpolant(), qI = qTr && qTr.createInterpolant();
+        const pv = new Float32Array(times.length * 3), qv = new Float32Array(times.length * 4);
+        const Kinv = info.Kinv;
+        let prev = null;
+        for (let k = 0; k < times.length; k++) {
+          const t = times[k];
+          if (pI) _p.fromArray(pI.evaluate(t)); else _p.copy(info.restP);
+          if (qI) _q.fromArray(qI.evaluate(t)).normalize(); else _q.copy(info.restQ);
+          _L.compose(_p, _q, _one);
+          _M.copy(Kp).multiply(_L).multiply(Kinv);
+          _M.decompose(_p, _q, _s);
+          if (prev && prev.dot(_q) < 0) _q.set(-_q.x, -_q.y, -_q.z, -_q.w); // stetige Quaternionen
+          prev = (prev || new THREE.Quaternion()).copy(_q);
+          _p.toArray(pv, k * 3); _q.toArray(qv, k * 4);
+        }
+        const nm = e.nodeName;
+        const newP = new THREE.VectorKeyframeTrack(`${nm}.position`, times, pv);
+        const newQ = new THREE.QuaternionKeyframeTrack(`${nm}.quaternion`, times, qv);
+        if (pTr) tracks[e.position] = newP; else extra.push(newP);
+        if (qTr) tracks[e.quaternion] = newQ; else extra.push(newQ);
+        changed = true;
+      }
+      tracks.push(...extra);
+    }
+    return changed ? new THREE.AnimationClip(clip.name, clip.duration, tracks, clip.blendMode) : clip;
   }
 
   $('#ed-rotate').addEventListener('click', () => setMode('rotate'));
   $('#ed-translate').addEventListener('click', () => setMode('translate'));
+  $('#ed-rig').addEventListener('click', () => setRigOnly(!st.rigOnly));
+  $('#ed-add-bone').addEventListener('click', addBone);
+  $('#ed-del-bone').addEventListener('click', deleteBone);
   $('#ed-undo').addEventListener('click', undo);
   $('#ed-reset-joint').addEventListener('click', resetJoint);
   $('#ed-reset-pose').addEventListener('click', resetPose);
@@ -770,13 +1077,31 @@ const editor = (() => {
     get active() { return st.active; },
     get bones() { return st.editable.map((b, i) => boneName(b, i)); },
     get selected() { return st.selected; },
-    capture, enter, exit, update, undo, resetJoint, resetPose, select, selectByName, rotateSelected, setMode,
+    get rigOnly() { return st.rigOnly; },
+    capture, enter, exit, update, undo, resetJoint, resetPose, select, setMode, setRigOnly,
+    rotateSelected, translateSelected, addBone, deleteBone, adaptClips, skeletons,
     toggle() { st.active ? exit() : enter(); },
+    selectByName(name) { const b = st.editable.find((x) => x.name === name); if (b) select(b); return !!b; },
     findBone(name) { return st.editable.find((x) => x.name === name); },
   };
 })();
 
-function unfreezeAnim() { animFrozen = false; }
+function rebuildAnimation() {
+  if (!mixer || !model) { rigDirty = false; return; }
+  const idx = Math.max(0, +$('#clip').value || 0);
+  const t = action ? action.time : 0;
+  mixer.stopAllAction();
+  mixer.uncacheRoot(model);
+  action = null;
+  clips = editor.adaptClips(baseClips);
+  playClip(idx);
+  if (action) action.time = t;
+  rigDirty = false;
+}
+function unfreezeAnim() {
+  animFrozen = false;
+  if (rigDirty) rebuildAnimation();
+}
 $('#play').addEventListener('click', () => { if (!paused) unfreezeAnim(); });
 $('#clip').addEventListener('change', unfreezeAnim);
 scrub.addEventListener('input', unfreezeAnim);
@@ -826,7 +1151,7 @@ async function exportGLB(opts = {}) {
     const exporter = new GLTFExporter();
     exporter.setTextureUtils({ decompress: (t, max) => WebGLTextureUtils.decompress(t, max) });
     const result = await exporter.parseAsync(model, {
-      binary: true, trs: true, onlyVisible: true, animations: clips, maxTextureSize: 4096,
+      binary: true, trs: true, onlyVisible: true, animations: editor.adaptClips(baseClips), maxTextureSize: 4096,
     });
     const file = new File([result], `${currentName}-bearbeitet.glb`, { type: 'model/gltf-binary' });
     window.__lastExport = file;
@@ -870,5 +1195,165 @@ function showExportDialog(file) {
   dlg.classList.remove('hidden');
 }
 
+// ---------- Meine Modelle (IndexedDB) ----------
+const library = (() => {
+  const DB = '3d-viewer', STORE = 'models';
+  let dbp = null;
+  function db() {
+    if (!dbp) dbp = new Promise((resolve, reject) => {
+      if (!('indexedDB' in window)) { reject(new Error('IndexedDB nicht verfügbar')); return; }
+      const r = indexedDB.open(DB, 1);
+      r.onupgradeneeded = () => { const s = r.result.createObjectStore(STORE, { keyPath: 'id', autoIncrement: true }); s.createIndex('date', 'date'); };
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+    });
+    return dbp;
+  }
+  async function tx(mode, fn) {
+    const d = await db();
+    return new Promise((resolve, reject) => {
+      const t = d.transaction(STORE, mode);
+      const s = t.objectStore(STORE);
+      let result;
+      Promise.resolve(fn(s)).then((r) => { result = r; });
+      t.oncomplete = () => resolve(result);
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error || new Error('Abgebrochen'));
+    });
+  }
+  const req = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+
+  async function list() {
+    return tx('readonly', async (s) => {
+      const all = await req(s.getAll());
+      return all.map(({ data, ...meta }) => meta).sort((a, b) => b.date - a.date);
+    });
+  }
+  async function get(id) { return tx('readonly', (s) => req(s.get(id))); }
+  async function put(rec) { return tx('readwrite', (s) => req(s.put(rec))); }
+  async function remove(id) { return tx('readwrite', (s) => req(s.delete(id))); }
+
+  function thumbnail() {
+    const hide = [];
+    scene.traverse((o) => { if ((o.isTransformControlsRoot || o.isSkeletonHelper || o.type === 'SkeletonHelper' || o.renderOrder >= 997) && o.visible) { hide.push(o); } });
+    hide.forEach((o) => { o.visible = false; });
+    renderer.render(scene, camera);
+    const src = renderer.domElement;
+    const c = document.createElement('canvas');
+    const S = 256; c.width = S; c.height = S;
+    const ctx = c.getContext('2d');
+    const side = Math.min(src.width, src.height);
+    ctx.drawImage(src, (src.width - side) / 2, (src.height - side) / 2, side, side, 0, 0, S, S);
+    hide.forEach((o) => { o.visible = true; });
+    return c.toDataURL('image/jpeg', 0.8);
+  }
+
+  function germanStorageError(err) {
+    const n = err && (err.name || '');
+    if (n === 'QuotaExceededError' || /quota/i.test(String(err && err.message))) return 'Nicht genug Speicherplatz: Bitte ältere Modelle in „Meine Modelle“ löschen und erneut versuchen.';
+    return `Speichern fehlgeschlagen.\nFehler: ${(err && err.message) || err}`;
+  }
+
+  async function saveCurrent(nameArg) {
+    if (!model) { showError('Bitte zuerst ein Modell öffnen.', 2500); return null; }
+    let name = nameArg;
+    if (name === undefined) {
+      name = window.prompt('Name für das Modell:', currentName);
+      if (name === null) return null;
+    }
+    name = (name || '').trim() || currentName;
+    const thumb = thumbnail();
+    const file = await exportGLB({ dialog: false });
+    if (!file) return null;
+    try {
+      if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+      const data = await file.arrayBuffer();
+      const id = await put({ name, date: Date.now(), size: data.byteLength, thumb, data });
+      showToast(`„${name}“ in „Meine Modelle“ gespeichert.`);
+      if (!$('#library').classList.contains('hidden')) render();
+      return id;
+    } catch (err) {
+      console.warn(err);
+      showError(germanStorageError(err));
+      return null;
+    }
+  }
+
+  async function open(id) {
+    const rec = await get(id);
+    if (!rec) { showError('Modell nicht gefunden.'); return; }
+    hide();
+    await openFiles([new File([rec.data], `${rec.name}.glb`, { type: 'model/gltf-binary' })]);
+  }
+
+  async function rename(id) {
+    const rec = await get(id);
+    if (!rec) return;
+    const n = window.prompt('Neuer Name:', rec.name);
+    if (n === null || !n.trim()) return;
+    rec.name = n.trim();
+    try { await put(rec); } catch (err) { showError(germanStorageError(err)); }
+    render();
+  }
+  async function del(id, name) {
+    if (!window.confirm(`„${name}“ wirklich löschen?`)) return;
+    await remove(id);
+    render();
+  }
+
+  async function usage() {
+    try {
+      if (!navigator.storage || !navigator.storage.estimate) return '';
+      const { usage: u = 0, quota: q = 0 } = await navigator.storage.estimate();
+      const mb = (x) => fmt1.format(x / 1048576);
+      return q ? `Speicher: ${mb(u)} MB von ca. ${fmt.format(Math.round(q / 1048576))} MB belegt` : `Speicher: ${mb(u)} MB belegt`;
+    } catch (e) { return ''; }
+  }
+
+  async function render() {
+    const ul = $('#lib-list');
+    let items = [];
+    try { items = await list(); } catch (err) { showError(`„Meine Modelle“ konnte nicht geladen werden.\n${err.message || err}`); }
+    ul.innerHTML = '';
+    $('#lib-empty').classList.toggle('hidden', items.length > 0);
+    const dtf = new Intl.DateTimeFormat('de-DE', { dateStyle: 'short', timeStyle: 'short' });
+    for (const it of items) {
+      const row = document.createElement('div');
+      row.className = 'lib-item';
+      const img = document.createElement('img'); img.src = it.thumb || 'icons/icon.svg'; img.alt = '';
+      const meta = document.createElement('div'); meta.className = 'lib-meta';
+      const nm = document.createElement('div'); nm.className = 'lib-name'; nm.textContent = it.name;
+      const sub = document.createElement('div'); sub.className = 'small';
+      sub.textContent = `${dtf.format(new Date(it.date))} · ${fmt1.format(it.size / 1048576)} MB`;
+      meta.append(nm, sub);
+      const btns = document.createElement('div'); btns.className = 'lib-btns';
+      const mk = (txt, cls, fn) => { const b = document.createElement('button'); b.textContent = txt; b.className = cls; b.addEventListener('click', fn); return b; };
+      btns.append(
+        mk('Öffnen', 'primary sm', () => open(it.id)),
+        mk('Umbenennen', 'ed-btn sm', () => rename(it.id)),
+        mk('Löschen', 'ed-btn sm danger', () => del(it.id, it.name)),
+      );
+      row.append(img, meta, btns);
+      ul.appendChild(row);
+    }
+    $('#lib-usage').textContent = await usage();
+    $('#lib-save').disabled = !model;
+  }
+  function show() { $('#library').classList.remove('hidden'); render(); }
+  function hide() { $('#library').classList.add('hidden'); }
+  $('#lib-close').addEventListener('click', hide);
+  $('#lib-save').addEventListener('click', () => saveCurrent());
+  return { show, hide, saveCurrent, list, open, render };
+})();
+
+let toastTimer;
+function showToast(msg, ms = 2500) {
+  const el = $('#toast');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add('hidden'), ms);
+}
+
 // Für Tests
-window.__viewer = { get clips() { return clips.map((c) => c.name); }, get model() { return model; }, openFiles, editor, exportGLB, THREE, GLTFLoader };
+window.__viewer = { get clips() { return clips.map((c) => c.name); }, get model() { return model; }, openFiles, editor, exportGLB, library, THREE, GLTFLoader, get mixer() { return mixer; }, get action() { return action; }, get rawClips() { return clips; }, get baseClips() { return baseClips; } };

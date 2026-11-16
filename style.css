@@ -137,3 +137,33 @@ body.ui-hidden .ui { display: none !important; }
 #export-dialog p { word-break: break-all; }
 .tool { font-size: 10px; min-width: 0; }
 .tool span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+
+/* ---------- Rig-Werkzeuge ---------- */
+body.editing .tools { display: none; }
+.ed-btn.toggle { gap: 6px; }
+.ed-btn.toggle .dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--muted); }
+.ed-btn.toggle.active { color: var(--accent); border-color: var(--accent); }
+.ed-btn.toggle.active .dot { background: var(--accent); border-color: var(--accent); }
+.ed-hint { font-size: 12.5px; color: #f0b44c; padding: 0 4px; }
+.ed-row .ed-export { flex: 1; width: auto; padding: 11px 6px; font-size: 14px; }
+.bone-item.added { color: #2ecc71; }
+.toast.ok { background: #1f7a45; }
+.danger { color: #ff6b6b; }
+
+/* ---------- Meine Modelle ---------- */
+.sheet {
+  position: fixed; z-index: 32; inset: 0; background: var(--bg); overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: calc(var(--sat) + 12px) calc(var(--sar) + 14px) calc(var(--sab) + 16px) calc(var(--sal) + 14px);
+  display: flex; flex-direction: column; gap: 10px; touch-action: pan-y;
+}
+.sheet-head { display: flex; align-items: center; justify-content: space-between; }
+.sheet-head h2 { margin: 0; font-size: 22px; }
+.lib-usage { color: var(--muted); }
+.lib-list { display: flex; flex-direction: column; gap: 10px; }
+.lib-item { display: grid; grid-template-columns: 72px 1fr; grid-template-rows: auto auto; gap: 8px 12px; padding: 10px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); }
+.lib-item img { width: 72px; height: 72px; border-radius: 10px; object-fit: cover; grid-row: span 2; background: #000; }
+.lib-name { font-weight: 600; word-break: break-word; }
+.lib-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.sm { padding: 7px 10px; font-size: 13px; height: auto; border-radius: 10px; }
+.small { font-size: 12.5px; color: var(--muted); }
+#welcome .secondary { margin-top: 8px; }

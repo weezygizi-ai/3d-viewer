@@ -35,6 +35,7 @@
     <h1>3D Viewer</h1>
     <p>Öffne GLB-, GLTF- oder FBX-Dateien. Alles bleibt auf deinem Gerät – nichts wird hochgeladen.</p>
     <button class="primary big" data-action="open">Datei öffnen</button>
+    <button class="secondary big" data-action="library">Meine Modelle</button>
     <p class="small">Tipp: Bei GLTF mit separaten .bin- und Textur-Dateien alle zusammen auswählen. Am Computer kannst du Dateien auch einfach hineinziehen.</p>
   </section>
 
@@ -48,6 +49,9 @@
   <header id="topbar" class="ui">
     <button class="icon-btn" data-action="open" title="Datei öffnen" aria-label="Datei öffnen">
       <svg viewBox="0 0 24 24"><path d="M4 20h16v-2H4v2zm8-16-5 5h3v6h4V9h3l-5-5z"/></svg>
+    </button>
+    <button class="icon-btn" data-action="library" title="Meine Modelle" aria-label="Meine Modelle">
+      <svg viewBox="0 0 24 24"><path d="M4 6H2v14a2 2 0 0 0 2 2h14v-2H4V6zm16-4H8a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm0 14H8V4h12v12zM10 9h8v2h-8zm0 3h4v2h-4zm0-6h8v2h-8z"/></svg>
     </button>
     <div id="filename" class="filename">Kein Modell</div>
     <button class="icon-btn" data-action="export" title="Als GLB herunterladen" aria-label="Als GLB herunterladen">
@@ -97,10 +101,19 @@
         <button id="ed-undo" class="ed-btn" disabled title="Rückgängig"><svg viewBox="0 0 24 24"><path d="M12.5 8c-2.65 0-5.05 1-6.9 2.6L2 7v9h9l-3.62-3.62A7.95 7.95 0 0 1 20.2 16l2.37-.78A10.5 10.5 0 0 0 12.5 8z"/></svg><span>Zurück</span></button>
       </div>
       <div class="ed-row">
+        <button id="ed-rig" class="ed-btn toggle" aria-pressed="false" title="Nur Rig: Gelenke bewegen, Mesh bleibt"><span class="dot"></span>Nur Rig</button>
+        <button id="ed-add-bone" class="ed-btn wide" title="Knochen hinzufügen">+ Knochen</button>
+        <button id="ed-del-bone" class="ed-btn" disabled title="Knochen löschen" aria-label="Knochen löschen"><svg viewBox="0 0 24 24"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg></button>
+      </div>
+      <div id="ed-hint" class="ed-hint hidden"></div>
+      <div class="ed-row">
         <button id="ed-reset-joint" class="ed-btn wide">Gelenk zurücksetzen</button>
         <button id="ed-reset-pose" class="ed-btn wide">Pose zurücksetzen</button>
       </div>
-      <button class="primary ed-export" data-action="export">Als GLB herunterladen</button>
+      <div class="ed-row">
+        <button class="primary ed-export" data-action="export">Als GLB herunterladen</button>
+        <button class="secondary ed-export" data-action="save">In App speichern</button>
+      </div>
     </div>
     <nav class="tools">
       <button class="tool" data-action="reset"><svg viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg><span>Ansicht</span></button>
@@ -129,6 +142,19 @@
     <button id="export-download" class="secondary big">Herunterladen</button>
     <button id="export-close" class="link">Schließen</button>
   </section>
+
+  <section id="library" class="sheet hidden" aria-label="Meine Modelle">
+    <div class="sheet-head">
+      <h2>Meine Modelle</h2>
+      <button id="lib-close" class="icon-btn small" aria-label="Schließen"><svg viewBox="0 0 24 24"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></svg></button>
+    </div>
+    <button id="lib-save" class="primary big">Aktuelles Modell in App speichern</button>
+    <div id="lib-usage" class="small lib-usage"></div>
+    <div id="lib-empty" class="small hidden">Noch keine Modelle gespeichert. Gespeicherte Modelle sind auch offline verfügbar.</div>
+    <div id="lib-list" class="lib-list"></div>
+  </section>
+
+  <div id="toast" class="toast ok hidden" role="status"></div>
 
   <input id="file" type="file" multiple hidden>
 
