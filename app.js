@@ -9,6 +9,7 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import * as WebGLTextureUtils from 'three/addons/utils/WebGLTextureUtils.js';
+import { initFace, arkitCanon } from './face.js';
 
 const $ = (s) => document.querySelector(s);
 const canvas = $('#view');
@@ -191,6 +192,7 @@ function germanError(err, name) {
 function disposeModel() {
   if (!model) return;
   editor.exit(true);
+  face?.exit(true);
   holder.remove(model);
   model.traverse((o) => {
     if (o.geometry) o.geometry.dispose();
@@ -233,6 +235,7 @@ function setModel(root, animations, name) {
   holder.add(model);
   model.updateMatrixWorld(true);
   editor.capture(); // Originalpose der Knochen merken (vor der Animation)
+  face?.onModel();
 
   if (clips.length) {
     mixer = new THREE.AnimationMixer(model);
@@ -383,6 +386,11 @@ function updateTimeUI() {
 }
 
 // ---------- Infos ----------
+function arkitCount() {
+  const set = new Set();
+  model?.traverse((o) => { if (o.morphTargetDictionary) for (const k in o.morphTargetDictionary) { const c = arkitCanon(k); if (c) set.add(c); } });
+  return set.size;
+}
 function buildInfo(name) {
   let meshes = 0, verts = 0, tris = 0, skinned = 0, morphs = 0;
   const mats = new Set(), texs = new Set(), bones = new Set();
@@ -408,6 +416,7 @@ function buildInfo(name) {
     ['Dreiecke', fmt.format(Math.round(tris))], ['Materialien', fmt.format(mats.size)],
     ['Texturen', fmt.format(texs.size)], ['Knochen', fmt.format(bones.size)],
     ['Geskinnte Meshes', fmt.format(skinned)], ['Morph-Targets', fmt.format(morphs)],
+    ['ARKit-Formen', `${arkitCount()} / 52`],
     ['Animationen', fmt.format(clips.length)],
   ];
   const dl = $('#info-list');
@@ -442,6 +451,7 @@ const actions = {
   open: () => fileInput.click(),
   info: () => $('#info').classList.toggle('hidden'),
   edit: () => editor.toggle(),
+  face: () => face.toggle(),
   export: () => exportGLB(),
   library: () => library.show(),
   save: () => library.saveCurrent(),
@@ -475,6 +485,15 @@ document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-action]');
   if (b && actions[b.dataset.action]) actions[b.dataset.action]();
 });
+// Panels minimieren (kleine Bildschirme: Modell bleibt sichtbar)
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('.collapse-btn');
+  if (!b) return;
+  const p = b.closest('.editor');
+  const c = p.classList.toggle('collapsed');
+  b.setAttribute('aria-expanded', String(!c));
+  b.title = c ? 'Aufklappen' : 'Minimieren';
+});
 $('#show-ui').addEventListener('click', () => {
   document.body.classList.remove('ui-hidden');
   $('#show-ui').classList.add('hidden');
@@ -496,7 +515,7 @@ window.addEventListener('drop', (e) => {
 // ---------- iOS: Seiten-Zoom / Bounce verhindern ----------
 ['gesturestart', 'gesturechange', 'gestureend'].forEach((t) => document.addEventListener(t, (e) => e.preventDefault(), { passive: false }));
 document.addEventListener('touchmove', (e) => {
-  if (!e.target.closest('.panel, .bone-list, .sheet, select, input[type=range]')) e.preventDefault();
+  if (!e.target.closest('.panel, .bone-list, .sheet, .editor, select, input[type=range]')) e.preventDefault();
 }, { passive: false });
 let lastTouchEnd = 0;
 document.addEventListener('touchend', (e) => {
@@ -537,6 +556,7 @@ renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1);
   if (mixer && !animFrozen) mixer.update(dt);
   editor.update();
+  face?.update(dt);
   updateTimeUI();
   controls.update();
   renderer.render(scene, camera);
@@ -553,6 +573,7 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 let animFrozen = false; // true = Animation angehalten, damit bearbeitete Pose sichtbar bleibt
 let baseClips = [];     // Clips wie geladen; `clips` = ggf. an das bearbeitete Rig angepasst
 let rigDirty = false;   // Rig wurde geändert -> Clips beim nächsten Abspielen neu aufbauen
+let face = null;        // Gesichts-Modus (face.js)
 const editor = (() => {
   const st = {
     active: false, bones: [], editable: [], original: new Map(), origInverses: new Map(),
@@ -829,6 +850,7 @@ const editor = (() => {
   const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _v = new THREE.Vector3(), _seg = new THREE.Line3();
   function boneSegment(N) {
     const head = N.getWorldPosition(new THREE.Vector3());
+    if (Array.isArray(N.userData.tail)) return new THREE.Line3(head, N.localToWorld(new THREE.Vector3().fromArray(N.userData.tail)));
     let tail = null;
     for (const c of N.children) {
       if (!c.isBone) continue;
@@ -844,7 +866,7 @@ const editor = (() => {
     return new THREE.Line3(head, tail);
   }
   // Kern: Gewichte für Knochen N berechnen (sprungfrei: N wird so gebunden, dass S_N = S_Quelle)
-  function assignWeights(N, meshes, R) {
+  function assignWeights(N, meshes, R, fn) {
     const seg = boneSegment(N);
     for (const m of meshes) {
       const sk = m.skeleton;
@@ -882,9 +904,13 @@ const editor = (() => {
         for (let k = 0; k < 4; k++) if (Wt[o + k] > 0 && qual[I[o + k]]) wq += Wt[o + k];
         if (wq < 1e-6) continue;
         m.getVertexPosition(v, _v).applyMatrix4(m.matrixWorld);
-        seg.closestPointToPoint(_v, true, _a);
-        const t = Math.min(1, _a.distanceTo(_v) / R);
-        const f = 1 - t * t * (3 - 2 * t);
+        let f;
+        if (fn) f = fn(_v, m);
+        else {
+          seg.closestPointToPoint(_v, true, _a);
+          const t = Math.min(1, _a.distanceTo(_v) / R);
+          f = 1 - t * t * (3 - 2 * t);
+        }
         if (f < 1e-4) continue;
         let transfer = 0, minK = -1;
         for (let k = 0; k < 4; k++) {
@@ -911,7 +937,9 @@ const editor = (() => {
     const R = Math.max(1e-6, (W.radiusPct / 100) * modelSize());
     const state = fullState();
     const meshes = skinnedMeshes().filter((m) => list.some((b) => m.skeleton.bones.includes(b)));
-    const changes = weightTxn(meshes, (ok) => { for (const b of list) assignWeights(b, ok.filter((m) => m.skeleton.bones.includes(b)), R); });
+    const changes = weightTxn(meshes, (ok) => {
+      for (const b of list) assignWeights(b, ok.filter((m) => m.skeleton.bones.includes(b)), opts.radiusFor?.(b) || R, opts.fnFor?.(b));
+    });
     pushUndo({ type: 'weights', state, changes });
     updateHeat();
     let n = 0;
@@ -1023,6 +1051,31 @@ const editor = (() => {
     if (W.auto) computeWeights([bone], { silent: true });
     return bone;
   }
+  // Knochen an Weltposition anlegen (z. B. Gesichtsknochen); Gewichte separat
+  function addBoneAt(parent, worldPos, name, opts = {}) {
+    model.updateMatrixWorld(true);
+    const bone = new THREE.Bone();
+    bone.name = name;
+    bone.userData.viewerAdded = true;
+    if (opts.face) bone.userData.faceBone = true;
+    bone.position.copy(parent.worldToLocal(worldPos.clone()));
+    parent.add(bone);
+    bone.updateMatrixWorld(true);
+    if (opts.tail) bone.userData.tail = bone.worldToLocal(opts.tail.clone()).toArray();
+    const targets = skeletons().filter((sk) => srcBoneIn(sk, parent));
+    for (const sk of targets) {
+      const src = srcBoneIn(sk, parent);
+      const pi = sk.bones.indexOf(src);
+      sk.bones.push(bone);
+      sk.boneInverses.push(new THREE.Matrix4().copy(bone.matrixWorld).invert().multiply(src.matrixWorld).multiply(sk.boneInverses[pi]));
+      resizeSkeleton(sk);
+    }
+    st.original.set(bone, snap(bone));
+    st.addCount++;
+    pushUndo({ type: 'add', bone });
+    return bone;
+  }
+  function deleteBoneRef(b) { const prev = st.selected; st.selected = b; deleteBone(); if (prev !== b && prev?.parent) st.selected = prev; }
   function removeBoneInternal(bone) {
     const record = { bone, parent: bone.parent, skels: [], weights: [] };
     for (const sk of skeletons()) {
@@ -1177,6 +1230,7 @@ const editor = (() => {
 
   function enter() {
     if (!model) { showError('Bitte zuerst ein Modell öffnen.', 2500); return; }
+    face?.exit();
     if (!st.bones.length) { showError('Dieses Modell hat keine Knochen/Gelenke zum Bearbeiten.', 3500); return; }
     st.active = true;
     animFrozen = true;
@@ -1365,12 +1419,40 @@ const editor = (() => {
     get heat() { return W.heat; },
     suspendHeat() { const was = W.heat; if (was) setHeat(false); return was; },
     resumeHeat(was) { if (was) setHeat(true); },
-    rotateSelected, translateSelected, addBone, deleteBone, adaptClips, skeletons,
+    rotateSelected, translateSelected, addBone, deleteBone, adaptClips, skeletons, addBoneAt, deleteBoneRef,
+    structureChanged() { afterStructureChange(null); },
     toggle() { st.active ? exit() : enter(); },
     selectByName(name) { const b = st.editable.find((x) => x.name === name); if (b) select(b); return !!b; },
     findBone(name) { return st.editable.find((x) => x.name === name); },
   };
 })();
+
+// ---------- Gesicht ----------
+let faceAnim = null;
+function restPose(on) {
+  if (on) {
+    const wasPlaying = !!action && !paused && !animFrozen;
+    animFrozen = true; paused = true;
+    $('#play').classList.add('paused');
+    faceAnim = { idx: Math.max(0, +$('#clip').value || 0), t: action ? action.time : 0, playing: wasPlaying };
+    if (mixer) { mixer.stopAllAction(); action = null; }
+  } else if (mixer && clips.length && model) {
+    mixer.stopAllAction();
+    mixer.uncacheRoot(model);
+    clips = editor.adaptClips(baseClips);
+    rigDirty = false;
+    playClip(faceAnim ? faceAnim.idx : 0);
+    if (action) { action.time = faceAnim ? faceAnim.t : 0; action.paused = true; }
+    if (action && faceAnim?.playing) { paused = false; animFrozen = false; action.paused = false; $('#play').classList.remove('paused'); }
+    mixer.update(0);
+    $('#anim').classList.remove('hidden');
+  }
+}
+face = initFace({
+  scene, camera, canvas, controls, editor, $, showToast: (...a) => showToast(...a), showError,
+  getModel: () => model, restPose, setToolActive, markAnimDirty: () => { rigDirty = true; },
+  refreshInfo: () => { if (model) buildInfo($('#filename').textContent); },
+});
 
 function rebuildAnimation() {
   if (!mixer || !model) { rigDirty = false; return; }
@@ -1434,6 +1516,7 @@ async function exportGLB(opts = {}) {
       out.forEach((m) => { if (m.wireframe) { wireMats.push(m); m.wireframe = false; } });
       if (changed) { swaps.push([o, o.material]); o.material = Array.isArray(o.material) ? out : out[0]; }
     });
+    face?.beforeExport();
     model.updateMatrixWorld(true);
     const exporter = new GLTFExporter();
     exporter.setTextureUtils({ decompress: (t, max) => WebGLTextureUtils.decompress(t, max) });
@@ -1646,4 +1729,4 @@ function showToast(msg, ms = 2500) {
 }
 
 // Für Tests
-window.__viewer = { get clips() { return clips.map((c) => c.name); }, get model() { return model; }, openFiles, editor, exportGLB, library, THREE, GLTFLoader, get mixer() { return mixer; }, get action() { return action; }, get rawClips() { return clips; }, get baseClips() { return baseClips; } };
+window.__viewer = { get clips() { return clips.map((c) => c.name); }, get model() { return model; }, openFiles, editor, face, exportGLB, library, THREE, GLTFLoader, get mixer() { return mixer; }, get action() { return action; }, get rawClips() { return clips; }, get baseClips() { return baseClips; } };

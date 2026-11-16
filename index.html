@@ -88,9 +88,10 @@
         <span id="time" class="time">0,0 / 0,0 s</span>
       </div>
     </div>
-    <div id="editor" class="editor hidden">
-      <div class="ed-row">
+    <div id="editor" class="editor collapsible hidden">
+      <div class="ed-row panel-head">
         <button id="bone-current" class="bone-current">Gelenk wählen …</button>
+        <button class="icon-btn small collapse-btn" aria-expanded="true" title="Minimieren" aria-label="Minimieren"><svg viewBox="0 0 24 24"><path d="M7.4 8.6 12 13.2l4.6-4.6L18 10l-6 6-6-6z"/></svg></button>
         <button id="ed-close" class="icon-btn small" aria-label="Bearbeiten beenden" title="Bearbeiten beenden"><svg viewBox="0 0 24 24"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></svg></button>
       </div>
       <div class="ed-row">
@@ -130,6 +131,108 @@
         <button class="secondary ed-export" data-action="save">In App speichern</button>
       </div>
     </div>
+    <div id="face" class="editor face collapsible hidden">
+      <div class="ed-row panel-head">
+        <div class="seg face-tabs">
+          <button data-ftab="rig" class="active">Rig</button>
+          <button data-ftab="shape">Formen</button>
+          <button data-ftab="gen">Erzeugen</button>
+          <button data-ftab="test">Test</button>
+        </div>
+        <button id="f-undo" class="icon-btn small" disabled title="Rückgängig" aria-label="Rückgängig"><svg viewBox="0 0 24 24"><path d="M12.5 8c-2.65 0-5.05 1-6.9 2.6L2 7v9h9l-3.62-3.62A7.95 7.95 0 0 1 20.2 16l2.37-.78A10.5 10.5 0 0 0 12.5 8z"/></svg></button>
+        <button class="icon-btn small collapse-btn" aria-expanded="true" title="Minimieren" aria-label="Minimieren"><svg viewBox="0 0 24 24"><path d="M7.4 8.6 12 13.2l4.6-4.6L18 10l-6 6-6-6z"/></svg></button>
+        <button id="face-close" class="icon-btn small" title="Gesicht beenden" aria-label="Gesicht beenden"><svg viewBox="0 0 24 24"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></svg></button>
+      </div>
+      <div class="face-body">
+        <section data-fpane="rig">
+          <div id="f-step" class="f-step"></div>
+          <div class="ed-row">
+            <button id="f-prev" class="ed-btn">‹ Zurück</button>
+            <button id="f-next" class="ed-btn wide primary-outline">Weiter ›</button>
+          </div>
+          <div class="ed-row">
+            <button id="f-mirror" class="ed-btn toggle sm2 active" title="Linke Punkte automatisch nach rechts spiegeln"><span class="dot"></span>Spiegeln L/R</button>
+            <button id="f-auto" class="ed-btn sm2">Auto-Platzieren</button>
+            <button id="f-view" class="ed-btn sm2">Ansicht</button>
+          </div>
+          <div class="ed-row">
+            <button id="f-bones" class="ed-btn sm2 wide">Gesichtsknochen erzeugen</button>
+            <button id="f-bones-del" class="ed-btn sm2" disabled>Entfernen</button>
+            <button id="f-turn" class="ed-btn sm2" title="Falls das Gesicht in eine andere Richtung schaut">Richtung ↻</button>
+          </div>
+          <label class="ed-row ed-slider"><span>Knochen-Radius</span><input id="f-bradius" type="range" min="40" max="200" step="5" value="100"><span id="f-bradius-val" class="time">100 %</span></label>
+          <div id="f-rig-hint" class="ed-hint"></div>
+        </section>
+        <section data-fpane="shape" class="hidden">
+          <div class="ed-row">
+            <select id="f-target" class="f-select" aria-label="Form"></select>
+            <button id="f-new" class="ed-btn sm2 grow0">+ Neu</button>
+          </div>
+          <label class="ed-row ed-slider"><span>Wert</span><input id="f-value" type="range" min="0" max="1" step="0.01" value="0"><span id="f-value-val" class="time">0,00</span></label>
+          <div class="ed-row">
+            <button id="f-rename" class="ed-btn sm2">Umbenennen</button>
+            <button id="f-mirror-shape" class="ed-btn sm2">Spiegeln</button>
+            <button id="f-zero" class="ed-btn sm2">Leeren</button>
+            <button id="f-delete" class="ed-btn sm2 danger">Löschen</button>
+          </div>
+          <div class="ed-row">
+            <button id="f-brush" class="ed-btn toggle sm2"><span class="dot"></span>Pinsel</button>
+            <button id="f-sym" class="ed-btn toggle sm2 active"><span class="dot"></span>Symmetrie</button>
+            <select id="f-mesh" class="f-select sm" aria-label="Mesh"></select>
+          </div>
+          <div class="seg f-tools">
+            <button data-tool="grab" class="active">Ziehen</button>
+            <button data-tool="inflate">Raus</button>
+            <button data-tool="deflate">Rein</button>
+            <button data-tool="smooth">Glätten</button>
+            <button data-tool="erase">Radierer</button>
+          </div>
+          <label class="ed-row ed-slider"><span>Radius</span><input id="f-radius" type="range" min="2" max="60" step="1" value="12"><span id="f-radius-val" class="time">12 %</span></label>
+          <label class="ed-row ed-slider"><span>Stärke</span><input id="f-strength" type="range" min="5" max="100" step="5" value="50"><span id="f-strength-val" class="time">50 %</span></label>
+          <div id="f-shape-hint" class="ed-hint"></div>
+        </section>
+        <section data-fpane="gen" class="hidden">
+          <div class="ed-row">
+            <button id="f-arkit" class="primary ed-export">ARKit-Formen erzeugen</button>
+            <button id="f-arkit-regen" class="ed-btn sm2 grow0" title="Automatisch erzeugte Formen mit den aktuellen Punkten neu berechnen">Neu berechnen</button>
+          </div>
+          <div id="f-arkit-status" class="small"></div>
+          <div id="f-arkit-list" class="chips"></div>
+          <div class="ed-row">
+            <button id="f-visemes" class="secondary ed-export">Visemes erzeugen (15)</button>
+          </div>
+          <div id="f-vis-status" class="small"></div>
+          <div class="ed-row">
+            <select id="f-vis-sel" class="f-select" aria-label="Visem"></select>
+            <button id="f-vis-test" class="ed-btn sm2 grow0">Zeigen</button>
+            <button id="f-vis-bake" class="ed-btn sm2 grow0">Neu backen</button>
+          </div>
+          <div id="f-vis-map" class="f-map"></div>
+          <div class="ed-row">
+            <button id="f-vis-add" class="ed-btn sm2">+ Form</button>
+            <button id="f-vis-reset" class="ed-btn sm2">Standard</button>
+          </div>
+        </section>
+        <section data-fpane="test" class="hidden">
+          <div id="f-emotions" class="chips"></div>
+          <div class="ed-row">
+            <button id="f-speak" class="ed-btn sm2 wide">🎙 Sprechtest: Audio wählen</button>
+            <button id="f-speak-stop" class="ed-btn sm2 grow0" disabled>Stopp</button>
+            <button id="f-blink" class="ed-btn toggle sm2 active grow0"><span class="dot"></span>Blinzeln</button>
+          </div>
+          <div class="ed-row">
+            <button id="f-emo-save" class="ed-btn sm2">Werte als Emotion speichern</button>
+            <button id="f-all-zero" class="ed-btn sm2">Alle auf 0</button>
+          </div>
+          <div id="f-sliders"></div>
+        </section>
+      </div>
+      <div class="ed-row">
+        <button class="primary ed-export" data-action="export">Als GLB herunterladen</button>
+        <button class="secondary ed-export" data-action="save">In App speichern</button>
+      </div>
+      <input id="f-audio" type="file" accept="audio/*" hidden>
+    </div>
     <nav class="tools">
       <button class="tool" data-action="reset"><svg viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg><span>Ansicht</span></button>
       <button class="tool" data-action="wireframe" data-toggle><svg viewBox="0 0 24 24"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5zm0 2.3 6.7 3.7L12 11.7 5.3 8 12 4.3zM5 9.7l6 3.3v6.7l-6-3.3V9.7zm8 10V13l6-3.3v6.7l-6 3.3z"/></svg><span>Gitternetz</span></button>
@@ -137,6 +240,7 @@
       <button class="tool active" data-action="grid" data-toggle><svg viewBox="0 0 24 24"><path d="M3 3h18v18H3V3zm2 2v4h4V5H5zm6 0v4h2V5h-2zm4 0v4h4V5h-4zM5 11v2h4v-2H5zm6 0v2h2v-2h-2zm4 0v2h4v-2h-4zM5 15v4h4v-4H5zm6 0v4h2v-4h-2zm4 0v4h4v-4h-4z"/></svg><span>Boden</span></button>
       <button class="tool" data-action="bg"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18V3z"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/></svg><span>Hell/Dunkel</span></button>
       <button class="tool" data-action="edit" data-toggle><svg viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.5"/><circle cx="12" cy="10" r="2.5"/><circle cx="19" cy="5" r="2.5"/><path d="M6 18l6-8 7-5" stroke="currentColor" stroke-width="2" fill="none"/></svg><span>Gelenke</span></button>
+      <button class="tool" data-action="face" data-toggle><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm-3.5-9a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zm7 0a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM12 17.5c2.3 0 4.3-1.4 5.1-3.5H6.9c.8 2.1 2.8 3.5 5.1 3.5z"/></svg><span>Gesicht</span></button>
       <button class="tool" data-action="fullscreen"><svg viewBox="0 0 24 24"><path d="M4 4h6v2H6v4H4V4zm10 0h6v6h-2V6h-4V4zM4 14h2v4h4v2H4v-6zm14 0h2v6h-6v-2h4v-4z"/></svg><span>Vollbild</span></button>
     </nav>
   </footer>
