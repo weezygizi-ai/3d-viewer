@@ -96,3 +96,44 @@ body.ui-hidden .ui { display: none !important; }
 @media (min-width: 700px) {
   #bottombar { left: 50%; right: auto; transform: translateX(-50%); width: 640px; }
 }
+
+/* ---------- Gelenk-Editor ---------- */
+.editor {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 8px;
+  display: flex; flex-direction: column; gap: 8px; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+}
+.ed-row { display: flex; gap: 8px; align-items: center; }
+.bone-current {
+  flex: 1; min-width: 0; height: 40px; border-radius: 10px; border: 1px solid var(--border); padding: 0 12px;
+  text-align: left; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.bone-current::after { content: " ▾"; color: var(--muted); }
+.icon-btn.small { width: 40px; height: 40px; }
+.seg { flex: 1; display: flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.seg button { flex: 1; height: 38px; font-size: 14px; color: var(--muted); }
+.seg button.active { background: var(--accent); color: #fff; }
+.ed-btn { height: 40px; border-radius: 10px; border: 1px solid var(--border); padding: 0 10px; display: inline-flex; align-items: center; gap: 4px; font-size: 14px; }
+.ed-btn svg { width: 18px; height: 18px; }
+.ed-btn.wide { flex: 1; justify-content: center; }
+.ed-btn:disabled { opacity: .4; }
+.ed-export { width: 100%; padding: 11px; }
+.picker {
+  position: fixed;
+  top: auto; bottom: calc(var(--sab) + 250px); left: calc(var(--sal) + 10px); right: calc(var(--sar) + 10px);
+  width: auto; max-height: 45vh; display: flex; flex-direction: column; gap: 8px; padding: 10px; z-index: 25;
+}
+@media (min-width: 700px) { .picker { left: 50%; right: auto; transform: translateX(-50%); width: 420px; } }
+#bone-search {
+  font: inherit; font-size: 16px; height: 40px; border-radius: 10px; border: 1px solid var(--border);
+  background: transparent; color: var(--fg); padding: 0 12px; -webkit-user-select: text; user-select: text;
+}
+.bone-list { overflow-y: auto; -webkit-overflow-scrolling: touch; display: flex; flex-direction: column; min-height: 0; touch-action: pan-y; }
+.bone-item { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); font-size: 14px; word-break: break-all; }
+.bone-item.selected { color: var(--accent); font-weight: 600; }
+.secondary { border: 1px solid var(--border); border-radius: 14px; padding: 12px 22px; font-weight: 600; }
+.link { color: var(--muted); margin-top: 10px; padding: 6px; }
+#export-dialog { z-index: 35; }
+#export-dialog h2 { margin: 0 0 6px; font-size: 20px; }
+#export-dialog p { word-break: break-all; }
+.tool { font-size: 10px; min-width: 0; }
+.tool span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }

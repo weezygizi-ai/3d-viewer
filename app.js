@@ -6,6 +6,9 @@ import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import * as WebGLTextureUtils from 'three/addons/utils/WebGLTextureUtils.js';
 
 const $ = (s) => document.querySelector(s);
 const canvas = $('#view');
@@ -46,6 +49,10 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.screenSpacePanning = true;
 controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+
+const holder = new THREE.Group(); // trägt Zentrierung/Skalierung, Modell selbst bleibt unverändert
+holder.name = '__viewer_holder';
+scene.add(holder);
 
 let grid = makeGrid(true);
 scene.add(grid);
@@ -183,7 +190,8 @@ function germanError(err, name) {
 // ---------- Modell anzeigen ----------
 function disposeModel() {
   if (!model) return;
-  scene.remove(model);
+  editor.exit(true);
+  holder.remove(model);
   model.traverse((o) => {
     if (o.geometry) o.geometry.dispose();
     const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
@@ -201,6 +209,7 @@ function setModel(root, animations, name) {
   disposeModel();
   model = root;
   clips = animations;
+  animFrozen = false;
 
   model.traverse((o) => {
     if (o.isMesh || o.isSkinnedMesh) {
@@ -219,7 +228,9 @@ function setModel(root, animations, name) {
     }
   });
 
-  scene.add(model);
+  holder.add(model);
+  model.updateMatrixWorld(true);
+  editor.capture(); // Originalpose der Knochen merken (vor der Animation)
 
   if (clips.length) {
     mixer = new THREE.AnimationMixer(model);
@@ -233,6 +244,7 @@ function setModel(root, animations, name) {
   buildAnimUI();
   buildInfo(name);
   $('#filename').textContent = name;
+  currentName = name.replace(/\.[^.]+$/, '').replace(/-bearbeitet$/, '') || 'modell';
   $('#welcome').classList.add('hidden');
   if (toolState.skeleton) toggleSkeleton(true);
 }
@@ -249,22 +261,22 @@ function computeBox(obj) {
 function frameModel(store) {
   if (!model) return;
   // Größe normalisieren: Modell zentrieren und auf ca. 2 Einheiten skalieren
-  model.position.set(0, 0, 0);
-  model.scale.setScalar(1);
-  model.updateMatrixWorld(true);
+  holder.position.set(0, 0, 0);
+  holder.scale.setScalar(1);
+  holder.updateMatrixWorld(true);
   let box = computeBox(model);
   if (box.isEmpty()) return;
   const size = box.getSize(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
   const s = 2 / maxDim;
-  model.scale.setScalar(s);
-  model.updateMatrixWorld(true);
+  holder.scale.setScalar(s);
+  holder.updateMatrixWorld(true);
   box = computeBox(model);
   const center = box.getCenter(new THREE.Vector3());
-  model.position.x -= center.x;
-  model.position.z -= center.z;
-  model.position.y -= box.min.y; // auf den Boden stellen
-  model.updateMatrixWorld(true);
+  holder.position.x -= center.x;
+  holder.position.z -= center.z;
+  holder.position.y -= box.min.y; // auf den Boden stellen
+  holder.updateMatrixWorld(true);
   box = computeBox(model);
   const sphere = box.getBoundingSphere(new THREE.Sphere());
   const r = sphere.radius || 1;
@@ -427,6 +439,8 @@ function toggleSkeleton(on) {
 const actions = {
   open: () => fileInput.click(),
   info: () => $('#info').classList.toggle('hidden'),
+  edit: () => editor.toggle(),
+  export: () => exportGLB(),
   reset: () => resetView(),
   wireframe: () => {
     wireframe = !wireframe; setToolActive('wireframe', wireframe);
@@ -478,7 +492,7 @@ window.addEventListener('drop', (e) => {
 // ---------- iOS: Seiten-Zoom / Bounce verhindern ----------
 ['gesturestart', 'gesturechange', 'gestureend'].forEach((t) => document.addEventListener(t, (e) => e.preventDefault(), { passive: false }));
 document.addEventListener('touchmove', (e) => {
-  if (!e.target.closest('.panel, select, input[type=range]')) e.preventDefault();
+  if (!e.target.closest('.panel, .bone-list, select, input[type=range]')) e.preventDefault();
 }, { passive: false });
 let lastTouchEnd = 0;
 document.addEventListener('touchend', (e) => {
@@ -517,7 +531,8 @@ resize();
 
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1);
-  if (mixer) mixer.update(dt);
+  if (mixer && !animFrozen) mixer.update(dt);
+  editor.update();
   updateTimeUI();
   controls.update();
   renderer.render(scene, camera);
@@ -530,5 +545,330 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
 }
 
+// ---------- Gelenk-Editor ----------
+let animFrozen = false; // true = Animation angehalten, damit bearbeitete Pose sichtbar bleibt
+const editor = (() => {
+  const st = { active: false, bones: [], editable: [], original: new Map(), selected: null, undo: [], mode: 'rotate', radius: 0.02 };
+  const tc = new TransformControls(camera, canvas);
+  tc.setMode('rotate');
+  tc.setSpace('local');
+  tc.setSize(1.25);
+  tc.enabled = false;
+  const tcHelper = tc.getHelper();
+  scene.add(tcHelper);
+  tc.addEventListener('dragging-changed', (e) => { controls.enabled = !e.value; });
+  tc.addEventListener('mouseDown', () => { if (st.selected) pushUndo([st.selected]); });
+
+  const jointsGroup = new THREE.Group();
+  jointsGroup.renderOrder = 998;
+  scene.add(jointsGroup);
+  const jointGeo = new THREE.SphereGeometry(1, 12, 8);
+  const jointMat = new THREE.MeshBasicMaterial({ color: 0x5b7cff, depthTest: false, transparent: true, opacity: 0.9 });
+  const jointSelMat = new THREE.MeshBasicMaterial({ color: 0xffb020, depthTest: false, transparent: true, opacity: 1 });
+  let jointMeshes = [];
+  let ownSkeleton = null;
+
+  const list = $('#bone-list');
+  const search = $('#bone-search');
+  const label = $('#bone-current');
+
+  const boneName = (b, i) => b.name || `Knochen ${i + 1}`;
+
+  function collectBones() {
+    const set = new Set();
+    model.traverse((o) => {
+      if (o.isBone) set.add(o);
+      if (o.isSkinnedMesh && o.skeleton) o.skeleton.bones.forEach((b) => b && set.add(b));
+    });
+    return [...set];
+  }
+  function snap(b) { return { b, p: b.position.clone(), q: b.quaternion.clone(), s: b.scale.clone() }; }
+  function restore(r) { r.b.position.copy(r.p); r.b.quaternion.copy(r.q); r.b.scale.copy(r.s); r.b.updateMatrixWorld(true); }
+
+  function capture() {
+    st.bones = model ? collectBones() : [];
+    // FBX-Eigenheit: gleichnamige Kind-Knochen (zweites Mesh) nicht doppelt anzeigen
+    st.editable = st.bones.filter((b) => !(b.name && b.parent && b.parent.isBone && b.parent.name === b.name));
+    st.original = new Map(st.bones.map((b) => [b, snap(b)]));
+    st.undo = [];
+    st.selected = null;
+    updateUndoBtn();
+  }
+
+  function pushUndo(bones) {
+    st.undo.push(bones.map(snap));
+    if (st.undo.length > 100) st.undo.shift();
+    updateUndoBtn();
+  }
+  function undo() {
+    const step = st.undo.pop();
+    if (step) step.forEach(restore);
+    updateUndoBtn();
+  }
+  function updateUndoBtn() { const b = $('#ed-undo'); if (b) b.disabled = !st.undo.length; }
+
+  function resetJoint() {
+    if (!st.selected) { showError('Bitte zuerst ein Gelenk auswählen.', 2500); return; }
+    pushUndo([st.selected]);
+    restore(st.original.get(st.selected));
+  }
+  function resetPose() {
+    if (!st.bones.length) return;
+    pushUndo(st.bones);
+    st.original.forEach(restore);
+  }
+
+  function buildJoints() {
+    clearJoints();
+    const box = new THREE.Box3().setFromObject(model);
+    const size = box.getSize(new THREE.Vector3());
+    st.radius = Math.max(size.x, size.y, size.z) * 0.012 || 0.02;
+    jointMeshes = st.editable.map((b) => {
+      const m = new THREE.Mesh(jointGeo, jointMat);
+      m.scale.setScalar(st.radius);
+      m.renderOrder = 998;
+      m.userData.bone = b;
+      jointsGroup.add(m);
+      return m;
+    });
+    if (!skeletonHelper) {
+      ownSkeleton = new THREE.SkeletonHelper(model);
+      ownSkeleton.material.depthTest = false;
+      ownSkeleton.renderOrder = 997;
+      scene.add(ownSkeleton);
+    }
+  }
+  function clearJoints() {
+    jointMeshes.forEach((m) => jointsGroup.remove(m));
+    jointMeshes = [];
+    if (ownSkeleton) { scene.remove(ownSkeleton); ownSkeleton.dispose(); ownSkeleton = null; }
+  }
+
+  function buildList() {
+    list.innerHTML = '';
+    st.editable.forEach((b, i) => {
+      const li = document.createElement('button');
+      li.className = 'bone-item';
+      li.textContent = boneName(b, i);
+      li.dataset.index = i;
+      li.addEventListener('click', () => { select(b); $('#bone-picker').classList.add('hidden'); });
+      list.appendChild(li);
+    });
+    filterList();
+  }
+  function filterList() {
+    const q = search.value.trim().toLowerCase();
+    for (const el of list.children) el.classList.toggle('hidden', !!q && !el.textContent.toLowerCase().includes(q));
+  }
+  search.addEventListener('input', filterList);
+
+  function select(b) {
+    st.selected = b;
+    if (b) tc.attach(b); else tc.detach();
+    jointMeshes.forEach((m) => { m.material = m.userData.bone === b ? jointSelMat : jointMat; m.scale.setScalar(st.radius * (m.userData.bone === b ? 1.5 : 1)); });
+    const i = st.editable.indexOf(b);
+    label.textContent = b ? boneName(b, i) : 'Gelenk wählen …';
+    for (const el of list.children) el.classList.toggle('selected', +el.dataset.index === i);
+  }
+
+  function setMode(mode) {
+    st.mode = mode;
+    tc.setMode(mode);
+    $('#ed-rotate').classList.toggle('active', mode === 'rotate');
+    $('#ed-translate').classList.toggle('active', mode === 'translate');
+  }
+
+  function enter() {
+    if (!model) { showError('Bitte zuerst ein Modell öffnen.', 2500); return; }
+    if (!st.bones.length) { showError('Dieses Modell hat keine Knochen/Gelenke zum Bearbeiten.', 3500); return; }
+    st.active = true;
+    animFrozen = true;
+    paused = true;
+    if (action) action.paused = true;
+    $('#play').classList.add('paused');
+    tc.enabled = true;
+    buildJoints();
+    buildList();
+    select(null);
+    setMode(st.mode);
+    $('#editor').classList.remove('hidden');
+    $('#anim').classList.add('hidden');
+    setToolActive('edit', true);
+  }
+  function exit(silent) {
+    if (!st.active && !silent) return;
+    st.active = false;
+    tc.detach();
+    tc.enabled = false;
+    controls.enabled = true;
+    clearJoints();
+    $('#editor').classList.add('hidden');
+    $('#bone-picker').classList.add('hidden');
+    if (clips.length && model) $('#anim').classList.remove('hidden');
+    setToolActive('edit', false);
+  }
+
+  // Tippen auf Gelenkpunkte (Bildschirm-Abstand, fingerfreundlich)
+  let down = null;
+  canvas.addEventListener('pointerdown', (e) => {
+    if (!st.active) return;
+    down = { x: e.clientX, y: e.clientY, t: performance.now(), gizmo: tc.axis !== null || tc.dragging };
+  });
+  canvas.addEventListener('pointerup', (e) => {
+    if (!st.active || !down) return;
+    const d = down; down = null;
+    if (d.gizmo || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 10 || performance.now() - d.t > 600) return;
+    const rect = canvas.getBoundingClientRect();
+    const v = new THREE.Vector3();
+    let best = null, bestD = 30;
+    for (const m of jointMeshes) {
+      v.copy(m.position).project(camera);
+      if (v.z > 1) continue;
+      const sx = rect.left + (v.x + 1) / 2 * rect.width, sy = rect.top + (1 - v.y) / 2 * rect.height;
+      const dist = Math.hypot(sx - e.clientX, sy - e.clientY);
+      if (dist < bestD) { bestD = dist; best = m.userData.bone; }
+    }
+    if (best) select(best);
+  });
+
+  function update() {
+    if (!st.active) return;
+    for (const m of jointMeshes) m.userData.bone.getWorldPosition(m.position);
+  }
+
+  // Programmatische Bearbeitung (gleicher Pfad wie das Gizmo: Undo-Schritt + Knochen-Transform)
+  function rotateSelected(axis, degrees) {
+    if (!st.selected) return false;
+    pushUndo([st.selected]);
+    st.selected.rotateOnAxis(new THREE.Vector3(...axis).normalize(), THREE.MathUtils.degToRad(degrees));
+    st.selected.updateMatrixWorld(true);
+    return true;
+  }
+  function selectByName(name) {
+    const b = st.editable.find((x) => x.name === name);
+    if (b) select(b);
+    return !!b;
+  }
+
+  $('#ed-rotate').addEventListener('click', () => setMode('rotate'));
+  $('#ed-translate').addEventListener('click', () => setMode('translate'));
+  $('#ed-undo').addEventListener('click', undo);
+  $('#ed-reset-joint').addEventListener('click', resetJoint);
+  $('#ed-reset-pose').addEventListener('click', resetPose);
+  $('#bone-current').addEventListener('click', () => {
+    const p = $('#bone-picker');
+    const edTop = $('#editor').getBoundingClientRect().top;
+    const barBottom = $('#topbar').getBoundingClientRect().bottom;
+    p.style.bottom = `${window.innerHeight - edTop + 8}px`;
+    p.style.maxHeight = `${Math.max(160, edTop - barBottom - 16)}px`;
+    p.classList.toggle('hidden');
+    if (!p.classList.contains('hidden')) { const sel = list.querySelector('.selected'); if (sel) sel.scrollIntoView({ block: 'center' }); }
+  });
+  $('#ed-close').addEventListener('click', () => exit());
+
+  return {
+    get active() { return st.active; },
+    get bones() { return st.editable.map((b, i) => boneName(b, i)); },
+    get selected() { return st.selected; },
+    capture, enter, exit, update, undo, resetJoint, resetPose, select, selectByName, rotateSelected, setMode,
+    toggle() { st.active ? exit() : enter(); },
+    findBone(name) { return st.editable.find((x) => x.name === name); },
+  };
+})();
+
+function unfreezeAnim() { animFrozen = false; }
+$('#play').addEventListener('click', () => { if (!paused) unfreezeAnim(); });
+$('#clip').addEventListener('change', unfreezeAnim);
+scrub.addEventListener('input', unfreezeAnim);
+
+// ---------- Export als GLB ----------
+let currentName = 'modell';
+function toStandardMaterial(m) {
+  if (!m || m.isMeshStandardMaterial || m.isMeshBasicMaterial) return null;
+  const n = new THREE.MeshStandardMaterial({
+    name: m.name,
+    color: m.color ? m.color.clone() : new THREE.Color(0xffffff),
+    map: m.map || null,
+    normalMap: m.normalMap || null,
+    emissive: m.emissive ? m.emissive.clone() : new THREE.Color(0x000000),
+    emissiveMap: m.emissiveMap || null,
+    emissiveIntensity: m.emissiveIntensity ?? 1,
+    aoMap: m.aoMap || null,
+    alphaMap: m.alphaMap || null,
+    opacity: m.opacity,
+    transparent: m.transparent,
+    alphaTest: m.alphaTest,
+    side: m.side,
+    vertexColors: m.vertexColors,
+    metalness: 0,
+    roughness: m.shininess !== undefined ? THREE.MathUtils.clamp(1 - m.shininess / 100, 0.35, 1) : 1,
+  });
+  if (m.normalScale) n.normalScale.copy(m.normalScale);
+  return n;
+}
+
+async function exportGLB(opts = {}) {
+  if (!model) { showError('Bitte zuerst ein Modell öffnen.', 2500); return null; }
+  setLoading(true, 'Erstelle GLB …');
+  const swaps = [];
+  const wireMats = [];
+  try {
+    // FBX/Phong-Materialien für glTF in PBR umwandeln, Drahtgitter-Ansicht nicht mit exportieren
+    model.traverse((o) => {
+      if (!o.isMesh || !o.material) return;
+      const arr = Array.isArray(o.material) ? o.material : [o.material];
+      let changed = false;
+      const out = arr.map((m) => { const n = toStandardMaterial(m); if (n) changed = true; return n || m; });
+      out.forEach((m) => { if (m.wireframe) { wireMats.push(m); m.wireframe = false; } });
+      if (changed) { swaps.push([o, o.material]); o.material = Array.isArray(o.material) ? out : out[0]; }
+    });
+    model.updateMatrixWorld(true);
+    const exporter = new GLTFExporter();
+    exporter.setTextureUtils({ decompress: (t, max) => WebGLTextureUtils.decompress(t, max) });
+    const result = await exporter.parseAsync(model, {
+      binary: true, trs: true, onlyVisible: true, animations: clips, maxTextureSize: 4096,
+    });
+    const file = new File([result], `${currentName}-bearbeitet.glb`, { type: 'model/gltf-binary' });
+    window.__lastExport = file;
+    if (opts.dialog !== false) showExportDialog(file);
+    return file;
+  } catch (err) {
+    console.warn(err);
+    showError(`GLB-Export fehlgeschlagen.\nFehler: ${(err && err.message) || err}`);
+    return null;
+  } finally {
+    for (const [o, mat] of swaps) {
+      const now = Array.isArray(o.material) ? o.material : [o.material];
+      const old = Array.isArray(mat) ? mat : [mat];
+      now.forEach((m) => { if (!old.includes(m)) m.dispose(); });
+      o.material = mat;
+    }
+    wireMats.forEach((m) => { m.wireframe = true; });
+    setLoading(false);
+  }
+}
+
+function downloadFile(file) {
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('a');
+  a.href = url; a.download = file.name; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+function showExportDialog(file) {
+  const dlg = $('#export-dialog');
+  $('#export-name').textContent = file.name;
+  $('#export-size').textContent = file.size < 1048576 ? `${fmt.format(Math.ceil(file.size / 1024))} KB` : `${fmt1.format(file.size / 1048576)} MB`;
+  const canShare = !!(navigator.canShare && navigator.share && navigator.canShare({ files: [file] }));
+  $('#export-share').classList.toggle('hidden', !canShare);
+  $('#export-share').onclick = async () => {
+    try { await navigator.share({ files: [file], title: file.name }); dlg.classList.add('hidden'); }
+    catch (e) { if (e && e.name !== 'AbortError') downloadFile(file); }
+  };
+  $('#export-download').onclick = () => { downloadFile(file); dlg.classList.add('hidden'); };
+  $('#export-close').onclick = () => dlg.classList.add('hidden');
+  dlg.classList.remove('hidden');
+}
+
 // Für Tests
-window.__viewer = { get clips() { return clips.map((c) => c.name); }, get model() { return model; }, openFiles };
+window.__viewer = { get clips() { return clips.map((c) => c.name); }, get model() { return model; }, openFiles, editor, exportGLB, THREE, GLTFLoader };

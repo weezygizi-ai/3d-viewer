@@ -1,5 +1,5 @@
 // Service Worker: speichert die App für die Offline-Nutzung.
-const CACHE = '3d-viewer-v1';
+const CACHE = '3d-viewer-v2';
 const ASSETS = [
   './',
   './app.js',
@@ -13,7 +13,9 @@ const ASSETS = [
   './vendor/three/jsm/controls/OrbitControls.js',
   './vendor/three/jsm/curves/NURBSCurve.js',
   './vendor/three/jsm/curves/NURBSUtils.js',
+  './vendor/three/jsm/controls/TransformControls.js',
   './vendor/three/jsm/environments/RoomEnvironment.js',
+  './vendor/three/jsm/exporters/GLTFExporter.js',
   './vendor/three/jsm/libs/basis/basis_transcoder.js',
   './vendor/three/jsm/libs/basis/basis_transcoder.wasm.b64',
   './vendor/three/jsm/libs/draco/draco_decoder.js',
@@ -27,6 +29,7 @@ const ASSETS = [
   './vendor/three/jsm/loaders/KTX2Loader.js',
   './vendor/three/jsm/math/ColorSpaces.js',
   './vendor/three/jsm/utils/BufferGeometryUtils.js',
+  './vendor/three/jsm/utils/WebGLTextureUtils.js',
   './vendor/three/jsm/utils/WorkerPool.js',
   './vendor/three/three.module.min.js',
 ];
