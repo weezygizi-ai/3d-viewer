@@ -1,5 +1,5 @@
 // Service Worker: speichert die App für die Offline-Nutzung.
-const CACHE = '3d-viewer-v3';
+const CACHE = '3d-viewer-v4';
 const ASSETS = [
   './',
   './app.js',

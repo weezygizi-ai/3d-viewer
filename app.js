@@ -649,6 +649,7 @@ const editor = (() => {
     if (!e) return;
     if (e.type === 'state') applyState(e);
     else if (e.type === 'add') removeBoneInternal(e.bone);
+    else if (e.type === 'weights') { restoreWeights(e.changes); applyState(e.state); }
     else if (e.type === 'delete') e.records.slice().reverse().forEach(reinsertBone);
     afterStructureChange(st.selected && st.selected.parent ? st.selected : null);
     updateButtons();
@@ -703,6 +704,7 @@ const editor = (() => {
       });
       st.rigOps.push({ bone: b, dp, dq, F, identityF: false, desc });
       rigDirty = true;
+      scheduleAuto(addedInSubtree(b));
     }
     rigOp = null;
   }
@@ -741,16 +743,256 @@ const editor = (() => {
     }
   }
 
+  // ---- Skin-Gewichte für hinzugefügte Knochen ----
+  const W = { auto: true, radiusPct: 6, heat: false, heatSaved: new Map(), timer: null };
+  const heatMat = new THREE.MeshBasicMaterial({ vertexColors: true });
+  function skinnedMeshes() { const out = []; model?.traverse((o) => { if (o.isSkinnedMesh && o.skeleton) out.push(o); }); return out; }
+  // Quell-Knochen im Skelett: das Eltern-Gelenk selbst oder (FBX) sein gleichnamiges Duplikat
+  function srcBoneIn(sk, P) {
+    if (!P) return null;
+    if (sk.bones.includes(P)) return P;
+    return P.children.find((c) => c.isBone && c.name === P.name && sk.bones.includes(c)) || null;
+  }
+  function ensureSkinAttrs(m) {
+    const g = m.geometry;
+    let si = g.getAttribute('skinIndex'), sw = g.getAttribute('skinWeight');
+    if (!si || !sw || si.itemSize !== 4 || sw.itemSize !== 4) return false;
+    // auch verschachtelte (interleaved) Attribute in eigene Arrays umwandeln
+    if (si.isInterleavedBufferAttribute || !(si.array instanceof Uint16Array) || si.array.length !== si.count * 4) {
+      const a = new Uint16Array(si.count * 4);
+      for (let v = 0; v < si.count; v++) for (let k = 0; k < 4; k++) a[v * 4 + k] = si.getComponent(v, k);
+      g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(a, 4));
+    }
+    if (sw.isInterleavedBufferAttribute || !(sw.array instanceof Float32Array) || sw.normalized || sw.array.length !== sw.count * 4) {
+      const a = new Float32Array(sw.count * 4);
+      for (let v = 0; v < sw.count; v++) for (let k = 0; k < 4; k++) a[v * 4 + k] = sw.getComponent(v, k);
+      g.setAttribute('skinWeight', new THREE.Float32BufferAttribute(a, 4));
+    }
+    return true;
+  }
+  // Änderungen an Gewichten aufzeichnen (nur geänderte Vertices -> Undo)
+  function weightTxn(meshes, fn) {
+    const ok = meshes.filter(ensureSkinAttrs);
+    const before = ok.map((m) => [m.geometry.attributes.skinIndex.array.slice(), m.geometry.attributes.skinWeight.array.slice()]);
+    fn(ok);
+    const changes = [];
+    ok.forEach((m, mi) => {
+      const I = m.geometry.attributes.skinIndex.array, Wt = m.geometry.attributes.skinWeight.array;
+      const [I0, W0] = before[mi];
+      const idx = [];
+      for (let v = 0, n = I.length / 4; v < n; v++) {
+        const o = v * 4;
+        if (I[o] !== I0[o] || I[o + 1] !== I0[o + 1] || I[o + 2] !== I0[o + 2] || I[o + 3] !== I0[o + 3] ||
+          Wt[o] !== W0[o] || Wt[o + 1] !== W0[o + 1] || Wt[o + 2] !== W0[o + 2] || Wt[o + 3] !== W0[o + 3]) idx.push(v);
+      }
+      if (!idx.length) return;
+      const oldI = new Uint16Array(idx.length * 4), oldW = new Float32Array(idx.length * 4);
+      idx.forEach((v, k) => { for (let j = 0; j < 4; j++) { oldI[k * 4 + j] = I0[v * 4 + j]; oldW[k * 4 + j] = W0[v * 4 + j]; } });
+      changes.push({ mesh: m, idx: Uint32Array.from(idx), oldI, oldW });
+      m.geometry.attributes.skinIndex.needsUpdate = true;
+      m.geometry.attributes.skinWeight.needsUpdate = true;
+    });
+    return changes;
+  }
+  function restoreWeights(changes) {
+    for (const c of changes) {
+      const g = c.mesh.geometry;
+      const I = g.attributes.skinIndex.array, Wt = g.attributes.skinWeight.array;
+      c.idx.forEach((v, k) => { for (let j = 0; j < 4; j++) { I[v * 4 + j] = c.oldI[k * 4 + j]; Wt[v * 4 + j] = c.oldW[k * 4 + j]; } });
+      g.attributes.skinIndex.needsUpdate = true; g.attributes.skinWeight.needsUpdate = true;
+    }
+    updateHeat();
+  }
+  // Gewichte eines Knochens an seine Quelle zurückgeben und Indizes > i verschieben (beim Entfernen)
+  function releaseBoneWeights(sk, i, srcIdx) {
+    for (const m of skinnedMeshes()) {
+      if (m.skeleton !== sk || !ensureSkinAttrs(m)) continue;
+      const I = m.geometry.attributes.skinIndex.array, Wt = m.geometry.attributes.skinWeight.array;
+      for (let o = 0; o < I.length; o += 4) {
+        for (let k = 0; k < 4; k++) {
+          if (I[o + k] === i) {
+            const w = Wt[o + k];
+            let s = -1;
+            for (let j = 0; j < 4; j++) if (j !== k && I[o + j] === srcIdx && Wt[o + j] > 0) s = j;
+            if (s >= 0) { Wt[o + s] += w; Wt[o + k] = 0; I[o + k] = 0; } else { I[o + k] = srcIdx; }
+          }
+        }
+        for (let k = 0; k < 4; k++) if (I[o + k] > i) I[o + k]--;
+      }
+      m.geometry.attributes.skinIndex.needsUpdate = true; m.geometry.attributes.skinWeight.needsUpdate = true;
+    }
+  }
+  function modelSize() {
+    const s = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3());
+    return Math.max(s.x, s.y, s.z) || 1;
+  }
+  const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _v = new THREE.Vector3(), _seg = new THREE.Line3();
+  function boneSegment(N) {
+    const head = N.getWorldPosition(new THREE.Vector3());
+    let tail = null;
+    for (const c of N.children) {
+      if (!c.isBone) continue;
+      const p = c.getWorldPosition(new THREE.Vector3());
+      if (p.distanceToSquared(head) > 1e-12) { tail = p; break; }
+    }
+    if (!tail || tail.distanceToSquared(head) < 1e-12) {
+      const pw = N.parent ? N.parent.getWorldPosition(new THREE.Vector3()) : head.clone().sub(new THREE.Vector3(0, 0.1, 0));
+      const d = head.clone().sub(pw);
+      if (d.lengthSq() < 1e-12) d.set(0, 0.1, 0);
+      tail = head.clone().add(d);
+    }
+    return new THREE.Line3(head, tail);
+  }
+  // Kern: Gewichte für Knochen N berechnen (sprungfrei: N wird so gebunden, dass S_N = S_Quelle)
+  function assignWeights(N, meshes, R) {
+    const seg = boneSegment(N);
+    for (const m of meshes) {
+      const sk = m.skeleton;
+      const ni = sk.bones.indexOf(N);
+      const src = srcBoneIn(sk, N.parent);
+      if (ni < 0 || !src) continue;
+      const si = sk.bones.indexOf(src);
+      // Neu binden: S_N := S_src
+      sk.boneInverses[ni].copy(N.matrixWorld).invert().multiply(src.matrixWorld).multiply(sk.boneInverses[si]);
+      // Knochen mit identischer Skin-Matrix dürfen sprungfrei Gewicht abgeben
+      const Ssrc = src.matrixWorld.clone().multiply(sk.boneInverses[si]).elements;
+      const tol = 1e-5 * Math.max(1, Math.abs(Ssrc[12]) + Math.abs(Ssrc[13]) + Math.abs(Ssrc[14]));
+      const qual = new Uint8Array(sk.bones.length);
+      sk.bones.forEach((b, j) => {
+        if (j === ni) return;
+        const e = b.matrixWorld.clone().multiply(sk.boneInverses[j]).elements;
+        let ok = true;
+        for (let k = 0; k < 16 && ok; k++) if (Math.abs(e[k] - Ssrc[k]) > (k >= 12 ? tol : 1e-5)) ok = false;
+        if (ok && (b === src || b.parent === N.parent || b.parent === src || isDescendantOrSelf(b, N.parent))) qual[j] = 1;
+      });
+      const I = m.geometry.attributes.skinIndex.array, Wt = m.geometry.attributes.skinWeight.array;
+      const count = I.length / 4;
+      for (let v = 0; v < count; v++) {
+        const o = v * 4;
+        // 1) bisheriges Gewicht von N an die Quelle zurück
+        for (let k = 0; k < 4; k++) {
+          if (I[o + k] === ni && Wt[o + k] > 0) {
+            let s = -1;
+            for (let j = 0; j < 4; j++) if (j !== k && I[o + j] === si && Wt[o + j] > 0) s = j;
+            if (s >= 0) { Wt[o + s] += Wt[o + k]; Wt[o + k] = 0; I[o + k] = 0; } else I[o + k] = si;
+          } else if (I[o + k] === ni) { I[o + k] = 0; }
+        }
+        // 2) Gewicht von qualifizierten Knochen in der Nähe übertragen
+        let wq = 0;
+        for (let k = 0; k < 4; k++) if (Wt[o + k] > 0 && qual[I[o + k]]) wq += Wt[o + k];
+        if (wq < 1e-6) continue;
+        m.getVertexPosition(v, _v).applyMatrix4(m.matrixWorld);
+        seg.closestPointToPoint(_v, true, _a);
+        const t = Math.min(1, _a.distanceTo(_v) / R);
+        const f = 1 - t * t * (3 - 2 * t);
+        if (f < 1e-4) continue;
+        let transfer = 0, minK = -1;
+        for (let k = 0; k < 4; k++) {
+          if (Wt[o + k] > 0 && qual[I[o + k]]) {
+            const d = Wt[o + k] * f; transfer += d; Wt[o + k] -= d;
+            if (minK < 0 || Wt[o + k] < Wt[o + minK]) minK = k;
+          }
+        }
+        let slot = -1;
+        for (let k = 0; k < 4; k++) if (Wt[o + k] <= 1e-7) { slot = k; break; }
+        if (slot >= 0) { I[o + slot] = ni; Wt[o + slot] = transfer; }
+        else { I[o + minK] = ni; Wt[o + minK] += transfer; } // max. 4 Einflüsse
+        let sum = Wt[o] + Wt[o + 1] + Wt[o + 2] + Wt[o + 3];
+        if (sum > 0) for (let k = 0; k < 4; k++) Wt[o + k] /= sum;
+      }
+    }
+  }
+  function computeWeights(bones, opts = {}) {
+    const list = (bones || []).filter(isAdded);
+    if (!list.length) { if (!opts.silent) showError('Gewichte können nur für selbst hinzugefügte Knochen berechnet werden.', 3000); return 0; }
+    model.updateMatrixWorld(true);
+    // Eltern zuerst
+    list.sort((a, b) => depth(a) - depth(b));
+    const R = Math.max(1e-6, (W.radiusPct / 100) * modelSize());
+    const state = fullState();
+    const meshes = skinnedMeshes().filter((m) => list.some((b) => m.skeleton.bones.includes(b)));
+    const changes = weightTxn(meshes, (ok) => { for (const b of list) assignWeights(b, ok.filter((m) => m.skeleton.bones.includes(b)), R); });
+    pushUndo({ type: 'weights', state, changes });
+    updateHeat();
+    let n = 0;
+    for (const m of meshes) {
+      const I = m.geometry.attributes.skinIndex.array, Wt = m.geometry.attributes.skinWeight.array;
+      const ids = new Set(list.map((b) => m.skeleton.bones.indexOf(b)));
+      for (let o = 0; o < I.length; o += 4) for (let k = 0; k < 4; k++) if (Wt[o + k] > 0 && ids.has(I[o + k])) { n++; break; }
+    }
+    if (!opts.silent) showToast(n ? `Gewichte berechnet: ${fmt.format(n)} Vertices beeinflusst.` : 'Keine Vertices im Einflussradius – Radius vergrößern.');
+    return n;
+  }
+  const depth = (b) => { let d = 0; for (let o = b; o; o = o.parent) d++; return d; };
+  function scheduleAuto(bones) {
+    if (!W.auto) return;
+    const list = bones.filter(isAdded);
+    if (!list.length) return;
+    clearTimeout(W.timer);
+    W.timer = setTimeout(() => computeWeights(list, { silent: true }), 300);
+  }
+  function addedInSubtree(b) { const out = []; b?.traverse((o) => { if (o.isBone && isAdded(o)) out.push(o); }); return out; }
+
+  // Heatmap
+  function heatColor(w, out, o) {
+    // blau (0) -> grün -> gelb -> rot (1)
+    const c = new THREE.Color().setHSL((1 - w) * 0.66, 1, 0.5);
+    out[o] = c.r; out[o + 1] = c.g; out[o + 2] = c.b;
+  }
+  function updateHeat() {
+    if (!W.heat) return;
+    const b = st.selected;
+    for (const m of skinnedMeshes()) {
+      const g = m.geometry;
+      const n = g.attributes.position.count;
+      let attr = W.heatSaved.get(m)?.attr;
+      if (!attr || attr.count !== n) { attr = new THREE.Float32BufferAttribute(new Float32Array(n * 3), 3); W.heatSaved.get(m).attr = attr; }
+      const out = attr.array;
+      const i = b ? m.skeleton.bones.indexOf(b) : -1;
+      if (!ensureSkinAttrs(m)) continue;
+      const I = g.attributes.skinIndex.array, Wt = g.attributes.skinWeight.array;
+      for (let v = 0; v < n; v++) {
+        let w = 0;
+        if (i >= 0) for (let k = 0; k < 4; k++) if (I[v * 4 + k] === i) w += Wt[v * 4 + k];
+        heatColor(Math.min(1, w), out, v * 3);
+      }
+      g.setAttribute('color', attr);
+      attr.needsUpdate = true;
+    }
+  }
+  function setHeat(on) {
+    if (on === W.heat) return;
+    if (on) {
+      if (!skinnedMeshes().length) { showError('Dieses Modell hat keine geskinnten Meshes.', 2500); return; }
+      W.heat = true;
+      for (const m of skinnedMeshes()) W.heatSaved.set(m, { material: m.material, color: m.geometry.getAttribute('color') || null, attr: null });
+      for (const m of skinnedMeshes()) m.material = heatMat;
+      updateHeat();
+    } else {
+      W.heat = false;
+      for (const [m, s] of W.heatSaved) {
+        m.material = s.material;
+        if (s.color) m.geometry.setAttribute('color', s.color); else m.geometry.deleteAttribute('color');
+      }
+      W.heatSaved.clear();
+    }
+    $('#ed-heat')?.classList.toggle('active', W.heat);
+  }
+
   // ---- Knochen hinzufügen / löschen ----
   function addBone() {
     const parent = st.selected;
     if (!parent) { showError('Bitte zuerst das Eltern-Gelenk auswählen.', 2500); return null; }
     model.updateMatrixWorld(true);
     const pw = parent.getWorldPosition(new THREE.Vector3());
+    // Richtung: zum entferntesten Kind-Knochen (FBX-Duplikate ohne Abstand ignorieren), sonst vom Großeltern-Gelenk weg
     let dir = null;
-    const childBone = parent.children.find((c) => c.isBone);
-    if (childBone) dir = childBone.getWorldPosition(new THREE.Vector3()).sub(pw);
-    else if (parent.parent && parent.parent.isBone) dir = pw.clone().sub(parent.parent.getWorldPosition(new THREE.Vector3()));
+    for (const c of parent.children) {
+      if (!c.isBone || isAdded(c)) continue;
+      const d = c.getWorldPosition(new THREE.Vector3()).sub(pw);
+      if (d.lengthSq() > 1e-12 && (!dir || d.lengthSq() > dir.lengthSq())) dir = d;
+    }
+    if (!dir && parent.parent && parent.parent.isBone) dir = pw.clone().sub(parent.parent.getWorldPosition(new THREE.Vector3()));
     if (!dir || dir.lengthSq() < 1e-12) dir = new THREE.Vector3(0, 1, 0);
     dir.normalize();
     const size = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3());
@@ -763,12 +1005,13 @@ const editor = (() => {
     parent.add(bone);
     bone.updateMatrixWorld(true);
     // in alle Skelette aufnehmen, die das Eltern-Gelenk enthalten; Bindung relativ zum Eltern-Gelenk
-    const targets = skeletons().filter((sk) => sk.bones.includes(parent));
+    const targets = skeletons().filter((sk) => srcBoneIn(sk, parent));
     const fallback = targets.length ? targets : skeletons().slice(0, 1);
     for (const sk of fallback) {
-      const pi = sk.bones.indexOf(parent);
+      const src = srcBoneIn(sk, parent);
+      const pi = src ? sk.bones.indexOf(src) : -1;
       const inv = new THREE.Matrix4();
-      if (pi >= 0) inv.copy(bone.matrixWorld).invert().multiply(parent.matrixWorld).multiply(sk.boneInverses[pi]);
+      if (pi >= 0) inv.copy(bone.matrixWorld).invert().multiply(src.matrixWorld).multiply(sk.boneInverses[pi]);
       else inv.copy(bone.matrixWorld).invert();
       sk.bones.push(bone);
       sk.boneInverses.push(inv);
@@ -777,13 +1020,17 @@ const editor = (() => {
     st.original.set(bone, snap(bone));
     pushUndo({ type: 'add', bone });
     afterStructureChange(bone);
+    if (W.auto) computeWeights([bone], { silent: true });
     return bone;
   }
   function removeBoneInternal(bone) {
-    const record = { bone, parent: bone.parent, skels: [] };
+    const record = { bone, parent: bone.parent, skels: [], weights: [] };
     for (const sk of skeletons()) {
       const i = sk.bones.indexOf(bone);
       if (i >= 0) {
+        const src = srcBoneIn(sk, bone.parent);
+        const si = src ? sk.bones.indexOf(src) : 0;
+        record.weights.push(...weightTxn(skinnedMeshes().filter((m) => m.skeleton === sk), () => releaseBoneWeights(sk, i, si)));
         record.skels.push({ sk, i, inv: sk.boneInverses[i].clone() });
         sk.bones.splice(i, 1); sk.boneInverses.splice(i, 1);
         resizeSkeleton(sk);
@@ -800,6 +1047,7 @@ const editor = (() => {
       sk.bones.splice(i, 0, r.bone); sk.boneInverses.splice(i, 0, inv);
       resizeSkeleton(sk);
     }
+    if (r.weights) restoreWeights(r.weights);
   }
   function deleteBone() {
     const b = st.selected;
@@ -881,14 +1129,34 @@ const editor = (() => {
     label.textContent = b ? boneName(b, i) : 'Gelenk wählen …';
     for (const el of list.children) el.classList.toggle('selected', +el.dataset.index === i);
     updateButtons();
+    updateHeat();
+  }
+  function weightCount(b) {
+    let n = 0;
+    for (const m of skinnedMeshes()) {
+      const i = m.skeleton.bones.indexOf(b);
+      if (i < 0) continue;
+      if (!ensureSkinAttrs(m)) continue;
+      const I = m.geometry.attributes.skinIndex.array, Wt = m.geometry.attributes.skinWeight.array;
+      for (let o = 0; o < I.length; o += 4) for (let k = 0; k < 4; k++) if (I[o + k] === i && Wt[o + k] > 0) { n++; break; }
+    }
+    return n;
   }
   function updateButtons() {
     const u = $('#ed-undo'); if (u) u.disabled = !st.undo.length;
     const d = $('#ed-del-bone'); if (d) d.disabled = !isAdded(st.selected);
+    const anyAdded = st.bones.some(isAdded);
+    $('#ed-weights-box')?.classList.toggle('hidden', !anyAdded);
+    const wb = $('#ed-weights'); if (wb) wb.disabled = !isAdded(st.selected);
+    $('#ed-auto')?.classList.toggle('active', W.auto);
+    $('#ed-heat')?.classList.toggle('active', W.heat);
     const hint = $('#ed-hint');
     if (hint) {
       let t = '';
-      if (isAdded(st.selected)) t = 'Neuer Knochen: noch ohne Gewichtung – er bewegt das Mesh nicht.';
+      if (isAdded(st.selected)) {
+        const n = weightCount(st.selected);
+        t = n ? `Neuer Knochen: beeinflusst ${fmt.format(n)} Vertices.` : 'Neuer Knochen: noch ohne Gewichtung – er bewegt das Mesh nicht.';
+      }
       else if (st.rigOnly) t = 'Nur Rig: Gelenke bewegen, das Mesh bleibt stehen.';
       hint.textContent = t;
       hint.classList.toggle('hidden', !t);
@@ -928,6 +1196,8 @@ const editor = (() => {
   }
   function exit(silent) {
     if (!st.active && !silent) return;
+    setHeat(false);
+    clearTimeout(W.timer);
     st.active = false;
     rigOp = null;
     tc.detach();
@@ -1072,6 +1342,16 @@ const editor = (() => {
     if (!p.classList.contains('hidden')) { const sel = list.querySelector('.selected'); if (sel) sel.scrollIntoView({ block: 'center' }); }
   });
   $('#ed-close').addEventListener('click', () => exit());
+  $('#ed-weights').addEventListener('click', () => { computeWeights([st.selected]); updateButtons(); });
+  $('#ed-weights-all').addEventListener('click', () => { computeWeights(st.bones.filter(isAdded)); updateButtons(); });
+  $('#ed-auto').addEventListener('click', () => { W.auto = !W.auto; updateButtons(); });
+  $('#ed-heat').addEventListener('click', () => setHeat(!W.heat));
+  const radius = $('#ed-radius');
+  radius.addEventListener('input', () => {
+    W.radiusPct = +radius.value;
+    $('#ed-radius-val').textContent = `${fmt.format(W.radiusPct)} %`;
+    if (W.auto && isAdded(st.selected)) scheduleAuto([st.selected]);
+  });
 
   return {
     get active() { return st.active; },
@@ -1079,6 +1359,12 @@ const editor = (() => {
     get selected() { return st.selected; },
     get rigOnly() { return st.rigOnly; },
     capture, enter, exit, update, undo, resetJoint, resetPose, select, setMode, setRigOnly,
+    computeWeights, setHeat, weightCount, skinnedMeshes,
+    setAuto(v) { W.auto = !!v; updateButtons(); },
+    setRadius(p) { W.radiusPct = p; radius.value = p; $('#ed-radius-val').textContent = `${fmt.format(p)} %`; },
+    get heat() { return W.heat; },
+    suspendHeat() { const was = W.heat; if (was) setHeat(false); return was; },
+    resumeHeat(was) { if (was) setHeat(true); },
     rotateSelected, translateSelected, addBone, deleteBone, adaptClips, skeletons,
     toggle() { st.active ? exit() : enter(); },
     selectByName(name) { const b = st.editable.find((x) => x.name === name); if (b) select(b); return !!b; },
@@ -1135,6 +1421,7 @@ function toStandardMaterial(m) {
 async function exportGLB(opts = {}) {
   if (!model) { showError('Bitte zuerst ein Modell öffnen.', 2500); return null; }
   setLoading(true, 'Erstelle GLB …');
+  const heatWas = editor.suspendHeat();
   const swaps = [];
   const wireMats = [];
   try {
@@ -1169,6 +1456,7 @@ async function exportGLB(opts = {}) {
       o.material = mat;
     }
     wireMats.forEach((m) => { m.wireframe = true; });
+    editor.resumeHeat(heatWas);
     setLoading(false);
   }
 }
@@ -1234,6 +1522,7 @@ const library = (() => {
   async function remove(id) { return tx('readwrite', (s) => req(s.delete(id))); }
 
   function thumbnail() {
+    const hw = editor.suspendHeat();
     const hide = [];
     scene.traverse((o) => { if ((o.isTransformControlsRoot || o.isSkeletonHelper || o.type === 'SkeletonHelper' || o.renderOrder >= 997) && o.visible) { hide.push(o); } });
     hide.forEach((o) => { o.visible = false; });
@@ -1245,6 +1534,7 @@ const library = (() => {
     const side = Math.min(src.width, src.height);
     ctx.drawImage(src, (src.width - side) / 2, (src.height - side) / 2, side, side, 0, 0, S, S);
     hide.forEach((o) => { o.visible = true; });
+    editor.resumeHeat(hw);
     return c.toDataURL('image/jpeg', 0.8);
   }
 
@@ -1283,7 +1573,7 @@ const library = (() => {
     const rec = await get(id);
     if (!rec) { showError('Modell nicht gefunden.'); return; }
     hide();
-    await openFiles([new File([rec.data], `${rec.name}.glb`, { type: 'model/gltf-binary' })]);
+    await openFiles([new File([rec.data], `${rec.name.replace(/\.glb$/i, '')}.glb`, { type: 'model/gltf-binary' })]);
   }
 
   async function rename(id) {

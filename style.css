@@ -167,3 +167,10 @@ body.editing .tools { display: none; }
 .sm { padding: 7px 10px; font-size: 13px; height: auto; border-radius: 10px; }
 .small { font-size: 12.5px; color: var(--muted); }
 #welcome .secondary { margin-top: 8px; }
+
+/* ---------- Gewichte ---------- */
+.ed-weights { display: flex; flex-direction: column; gap: 6px; padding: 6px; border: 1px dashed var(--border); border-radius: 12px; }
+.ed-btn.sm2 { height: 36px; font-size: 13px; padding: 0 8px; flex: 1; justify-content: center; }
+.ed-slider { font-size: 13px; color: var(--muted); }
+.ed-slider input { flex: 1; accent-color: var(--accent); height: 28px; touch-action: none; }
+.ed-slider .time { min-width: 44px; }
