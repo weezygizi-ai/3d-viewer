@@ -10,6 +10,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import * as WebGLTextureUtils from 'three/addons/utils/WebGLTextureUtils.js';
 import { initFace, arkitCanon } from './face.js';
+import { initVrm } from './vrm.js';
 
 const $ = (s) => document.querySelector(s);
 const canvas = $('#view');
@@ -110,6 +111,11 @@ gltfLoader.setDRACOLoader(draco);
 gltfLoader.setKTX2Loader(ktx2);
 gltfLoader.setMeshoptDecoder(MeshoptDecoder);
 const fbxLoader = new FBXLoader(manager);
+function makeGltfLoader() {
+  const l = new GLTFLoader(manager);
+  l.setDRACOLoader(draco); l.setKTX2Loader(ktx2); l.setMeshoptDecoder(MeshoptDecoder);
+  return l;
+}
 
 // ---------- Zustand ----------
 let model = null;
@@ -125,7 +131,7 @@ let scrubbing = false;
 const clock = new THREE.Clock();
 
 // ---------- Datei laden ----------
-const MODEL_EXT = ['glb', 'gltf', 'fbx'];
+const MODEL_EXT = ['glb', 'gltf', 'fbx', 'vrm'];
 const extOf = (name) => (name.split('.').pop() || '').toLowerCase();
 
 async function openFiles(fileList) {
@@ -133,7 +139,7 @@ async function openFiles(fileList) {
   if (!files.length) return;
   const main = files.find((f) => MODEL_EXT.includes(extOf(f.name)));
   if (!main) {
-    showError(`Dieses Dateiformat wird nicht unterstützt: „${files[0].name}“.\nBitte eine .glb-, .gltf- oder .fbx-Datei wählen.`);
+    showError(`Dieses Dateiformat wird nicht unterstützt: „${files[0].name}“.\nBitte eine .glb-, .gltf-, .fbx- oder .vrm-Datei wählen.`);
     return;
   }
   // Begleitdateien (Texturen, .bin) als Blob-URLs bereitstellen
@@ -146,8 +152,15 @@ async function openFiles(fileList) {
   try {
     const buffer = await main.arrayBuffer();
     const ext = extOf(main.name);
-    let root, animations = [];
-    if (ext === 'fbx') {
+    let root, animations = [], vrmObj = null;
+    if (ext === 'vrm') {
+      if (needsBasis(buffer, 'glb')) await prepareBasis().catch(() => {});
+      const r = await vrmMod.parse(buffer);
+      root = r.gltf.scene || (r.gltf.scenes && r.gltf.scenes[0]);
+      animations = r.gltf.animations || [];
+      vrmObj = r.vrm;
+      if (!root) throw new Error('Die Datei enthält keine Szene.');
+    } else if (ext === 'fbx') {
       const obj = fbxLoader.parse(buffer, '');
       root = obj; animations = obj.animations || [];
     } else {
@@ -157,7 +170,7 @@ async function openFiles(fileList) {
       animations = gltf.animations || [];
       if (!root) throw new Error('Die Datei enthält keine Szene.');
     }
-    setModel(root, animations, main.name);
+    setModel(root, animations, main.name, vrmObj);
   } catch (err) {
     console.warn(err);
     showError(germanError(err, main.name));
@@ -193,6 +206,7 @@ function disposeModel() {
   if (!model) return;
   editor.exit(true);
   face?.exit(true);
+  vrmMod?.dispose(model);
   holder.remove(model);
   model.traverse((o) => {
     if (o.geometry) o.geometry.dispose();
@@ -207,8 +221,9 @@ function disposeModel() {
   mixer = null; action = null; clips = []; model = null;
 }
 
-function setModel(root, animations, name) {
+function setModel(root, animations, name, vrmObj = null) {
   disposeModel();
+  vrmMod?.onModel(vrmObj);
   model = root;
   clips = animations;
   baseClips = animations;
@@ -246,6 +261,7 @@ function setModel(root, animations, name) {
   model.updateMatrixWorld(true);
 
   frameModel(true);
+  vrmMod?.afterFrame();
   buildAnimUI();
   buildInfo(name);
   $('#filename').textContent = name;
@@ -408,6 +424,7 @@ function buildInfo(name) {
       (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => {
         if (!m) return; mats.add(m);
         for (const k in m) { const v = m[k]; if (v && v.isTexture) texs.add(v); }
+        if (m.uniforms) for (const k in m.uniforms) { const v = m.uniforms[k]?.value; if (v && v.isTexture) texs.add(v); } // MToon (VRM)
       });
     }
   });
@@ -417,6 +434,7 @@ function buildInfo(name) {
     ['Texturen', fmt.format(texs.size)], ['Knochen', fmt.format(bones.size)],
     ['Geskinnte Meshes', fmt.format(skinned)], ['Morph-Targets', fmt.format(morphs)],
     ['ARKit-Formen', `${arkitCount()} / 52`],
+    ...(model.userData.vrm ? [['VRM', `${model.userData.vrm.version} · ${Object.keys(model.userData.vrm.humanBones || {}).length} Humanoid-Knochen · ${(model.userData.vrm.expressions || []).length} Ausdrücke`]] : []),
     ['Animationen', fmt.format(clips.length)],
   ];
   const dl = $('#info-list');
@@ -450,8 +468,9 @@ function toggleSkeleton(on) {
 const actions = {
   open: () => fileInput.click(),
   info: () => $('#info').classList.toggle('hidden'),
-  edit: () => editor.toggle(),
-  face: () => face.toggle(),
+  edit: () => { vrmMod.close(); editor.toggle(); },
+  face: () => { vrmMod.close(); face.toggle(); },
+  vrm: () => vrmMod.toggle(),
   export: () => exportGLB(),
   library: () => library.show(),
   save: () => library.saveCurrent(),
@@ -557,6 +576,7 @@ renderer.setAnimationLoop(() => {
   if (mixer && !animFrozen) mixer.update(dt);
   editor.update();
   face?.update(dt);
+  if (!face?.active) vrmMod?.update(dt);
   updateTimeUI();
   controls.update();
   renderer.render(scene, camera);
@@ -573,7 +593,7 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 let animFrozen = false; // true = Animation angehalten, damit bearbeitete Pose sichtbar bleibt
 let baseClips = [];     // Clips wie geladen; `clips` = ggf. an das bearbeitete Rig angepasst
 let rigDirty = false;   // Rig wurde geändert -> Clips beim nächsten Abspielen neu aufbauen
-let face = null;        // Gesichts-Modus (face.js)
+let face = null, vrmMod = null;        // Gesichts-Modus (face.js)
 const editor = (() => {
   const st = {
     active: false, bones: [], editable: [], original: new Map(), origInverses: new Map(),
@@ -603,7 +623,7 @@ const editor = (() => {
   const list = $('#bone-list');
   const search = $('#bone-search');
   const label = $('#bone-current');
-  const boneName = (b, i) => b.name || `Knochen ${i + 1}`;
+  const boneName = (b, i) => (b.name || `Knochen ${i + 1}`) + (b.userData.vrmHuman ? ` · ${b.userData.vrmHuman}` : '');
   const isAdded = (b) => !!(b && b.userData && b.userData.viewerAdded);
 
   // ---- Hilfen: Skelette ----
@@ -1448,10 +1468,16 @@ function restPose(on) {
     $('#anim').classList.remove('hidden');
   }
 }
+vrmMod = initVrm({
+  $, makeLoader: makeGltfLoader, showToast: (...a) => showToast(...a), showError, getModel: () => model, setToolActive,
+  closeOthers: () => { editor.exit(); face?.exit(); },
+  onMorphsChanged: () => { if (model) buildInfo($('#filename').textContent); },
+});
 face = initFace({
   scene, camera, canvas, controls, editor, $, showToast: (...a) => showToast(...a), showError,
   getModel: () => model, restPose, setToolActive, markAnimDirty: () => { rigDirty = true; },
   refreshInfo: () => { if (model) buildInfo($('#filename').textContent); },
+  landmarkHints: () => vrmMod?.faceHints(),
 });
 
 function rebuildAnimation() {
@@ -1506,7 +1532,9 @@ async function exportGLB(opts = {}) {
   const heatWas = editor.suspendHeat();
   const swaps = [];
   const wireMats = [];
+  let vrmRestore = null;
   try {
+    vrmRestore = vrmMod.beforeExport(model); // MToon -> Unlit, Outlines weglassen
     // FBX/Phong-Materialien für glTF in PBR umwandeln, Drahtgitter-Ansicht nicht mit exportieren
     model.traverse((o) => {
       if (!o.isMesh || !o.material) return;
@@ -1539,6 +1567,7 @@ async function exportGLB(opts = {}) {
       o.material = mat;
     }
     wireMats.forEach((m) => { m.wireframe = true; });
+    vrmRestore?.();
     editor.resumeHeat(heatWas);
     setLoading(false);
   }
@@ -1729,4 +1758,4 @@ function showToast(msg, ms = 2500) {
 }
 
 // Für Tests
-window.__viewer = { get clips() { return clips.map((c) => c.name); }, get model() { return model; }, openFiles, editor, face, exportGLB, library, THREE, GLTFLoader, get mixer() { return mixer; }, get action() { return action; }, get rawClips() { return clips; }, get baseClips() { return baseClips; } };
+window.__viewer = { get vrm() { return vrmMod; }, camera, controls, get clips() { return clips.map((c) => c.name); }, get model() { return model; }, openFiles, editor, face, exportGLB, library, THREE, GLTFLoader, get mixer() { return mixer; }, get action() { return action; }, get rawClips() { return clips; }, get baseClips() { return baseClips; } };

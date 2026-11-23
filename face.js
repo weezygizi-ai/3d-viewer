@@ -477,6 +477,8 @@ export function initFace(ctx) {
     const X = new THREE.Vector3(e[0], e[1], e[2]).normalize();
     const Y = new THREE.Vector3(e[4], e[5], e[6]).normalize();
     const Z = new THREE.Vector3(e[8], e[9], e[10]).normalize();
+    // VRM 0.x: Wurzel wurde beim Laden um 180° gedreht (Figur schaut entlang −Z der Wurzel)
+    if (m.userData.vrm && m.userData.vrm.version === '0.x') { X.negate(); Z.negate(); }
     for (let k = 0; k < (S.facing % 4 + 4) % 4; k++) { const nx = Z.clone(), nz = X.clone().negate(); X.copy(nx); Z.copy(nz); }
     return { X, Y, Z };
   }
@@ -662,7 +664,8 @@ export function initFace(ctx) {
     const W = new THREE.Matrix4(), P = new THREE.Matrix4();
     for (const [b, mesh, i] of jobs) {
       mesh.updateMatrixWorld(true);
-      W.copy(mesh.matrixWorld).multiply(mesh.bindMatrixInverse).multiply(new THREE.Matrix4().copy(mesh.skeleton.boneInverses[i]).invert());
+      // Ruhe: bindMatrixInverse · W · boneInverse · bindMatrix = I  ->  W = inv(bindMatrixInverse) · inv(bindMatrix) · inv(boneInverse)
+      W.copy(mesh.bindMatrixInverse).invert().multiply(new THREE.Matrix4().copy(mesh.bindMatrix).invert()).multiply(new THREE.Matrix4().copy(mesh.skeleton.boneInverses[i]).invert());
       b.parent.updateMatrixWorld(true);
       P.copy(b.parent.matrixWorld).invert().multiply(W);
       P.decompose(b.position, b.quaternion, b.scale);
@@ -681,7 +684,11 @@ export function initFace(ctx) {
   // Profil der Gesichtsmitte (Strahlen von vorne) -> Nasenspitze, Nasenwurzel, Mund, Kinn
   function analyseProfile(h, ms) {
     const { mn, mx } = h;
-    const cx = (mn[0] + mx[0]) / 2, front = mx[2], H = mx[1] - mn[1];
+    const cx = (mn[0] + mx[0]) / 2, front = mx[2];
+    // Bereich auf den Kopf begrenzen (lange Haare/Zöpfe hängen am Kopf-Knochen und vergrößern die Box nach unten)
+    let bottom = mn[1];
+    if (h.hb) { const hy = h.hb.getWorldPosition(new THREE.Vector3()).dot(h.Y); if (hy < mx[1] && hy > mn[1]) bottom = Math.max(mn[1], hy - 0.6 * (mx[1] - hy)); }
+    const H = mx[1] - bottom;
     const N = 140, ys = [], zs = [];
     const ray = new THREE.Ray();
     for (let k = 0; k < N; k++) {
@@ -786,11 +793,42 @@ export function initFace(ctx) {
       const hit = raycast(ray, ms);
       setPointWorld(id, hit ? hit.point : h.toWorld(cx + x, y, frontZ - W * 0.5));
     };
-    for (const id in T) {
-      place(id, T[id][0], T[id][1]);
-      const l = LM_BY[id];
-      if (l.pair) place(l.pair, -T[id][0], T[id][1]);
+    // Hinweise aus dem Modell (z. B. VRM-Ausdrücke: Blinzeln -> Lider/Augen, aa -> Mund) haben Vorrang
+    let hint = null;
+    try { hint = ctx.landmarkHints?.() || null; } catch (e) { hint = null; }
+    const hx = (p) => p.dot(h.X), hy = (p) => p.dot(h.Y);
+    if (hint && hint.eyeL && hint.eyeR) {
+      cx = (hx(hint.eyeL) + hx(hint.eyeR)) / 2;
+      const u = Math.abs(hx(hint.eyeL) - hx(hint.eyeR));
+      const e = (hy(hint.eyeL) + hy(hint.eyeR)) / 2, lu = (hy(hint.lidUpL) + hy(hint.lidUpR)) / 2;
+      T.browInL = [0.22 * u, lu + 0.22 * u]; T.browOutL = [0.72 * u, lu + 0.19 * u];
+      if (!hint.mouthL) { T.mouthL = [0.35 * u, e - 1.1 * u]; T.lipUp = [0, e - 1.05 * u]; T.lipLo = [0, e - 1.15 * u]; T.chin = [0, e - 1.75 * u]; }
+      for (const k of ['eyeL', 'lidUpL', 'lidLoL']) delete T[k];
+      jawY = e - 0.6 * u; jawX = 2 * u;
     }
+    if (hint && hint.mouthL && hint.mouthR) {
+      const my = hint.mouthY, mw = Math.abs(hx(hint.mouthL) - hx(hint.mouthR));
+      const u = hint.eyeL ? Math.abs(hx(hint.eyeL) - hx(hint.eyeR)) : mw * 1.4;
+      if (!hint.eyeL) cx = (hx(hint.mouthL) + hx(hint.mouthR)) / 2;
+      T.lipUp = [0, my + 0.05 * u];
+      T.lipLo = [0, Math.min(my - 0.05 * u, hint.lipLo ? hy(hint.lipLo) : my - 0.08 * u)];
+      T.chin = [0, my - 0.42 * u];
+      delete T.mouthL;
+    }
+    const hintMs = hint && hint.meshes && hint.meshes.length ? hint.meshes : null;
+    const placeH = (id, x, y) => {
+      // Treffer bevorzugt auf dem Gesichts-Mesh (Pony/Haare verdecken sonst Brauen und Lippen)
+      ray.origin.copy(h.toWorld(cx + x, y, frontZ)); ray.direction.copy(h.Z).negate();
+      const hit = (hintMs && raycast(ray, hintMs)) || raycast(ray, ms);
+      setPointWorld(id, hit ? hit.point : h.toWorld(cx + x, y, frontZ - W * 0.5));
+    };
+    const P = hint ? placeH : place;
+    for (const id in T) {
+      P(id, T[id][0], T[id][1]);
+      const l = LM_BY[id];
+      if (l.pair) P(l.pair, -T[id][0], T[id][1]);
+    }
+    if (hint) for (const id of ['eyeL', 'eyeR', 'lidUpL', 'lidUpR', 'lidLoL', 'lidLoR', 'mouthL', 'mouthR']) if (hint[id] && !(id.startsWith('mouth') && !hint.mouthR)) setPointWorld(id, hint[id]);
     for (const [id, sgn] of [['jawL', 1], ['jawR', -1]]) {
       ray.origin.copy(h.toWorld(cx + sgn * jawX * 1.5, jawY, jawZ));
       ray.direction.copy(h.X).multiplyScalar(-sgn);
