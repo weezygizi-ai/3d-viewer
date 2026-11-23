@@ -155,18 +155,30 @@
     </div>
     <div id="face" class="editor face collapsible hidden">
       <div class="ed-row panel-head">
-        <div class="seg face-tabs">
+        <div class="seg face-tabs morph-ui">
           <button data-ftab="rig" class="active">Rig</button>
           <button data-ftab="shape">Formen</button>
           <button data-ftab="gen">Erzeugen</button>
           <button data-ftab="test">Test</button>
         </div>
+        <span class="wiz-title morph-ui-inv">Rig</span>
+        <div class="wiz-pips morph-ui-inv" aria-label="Schritte">
+          <button type="button" class="wiz-pip" data-goto="1">1</button>
+          <span class="wiz-rail" data-rail="1"></span>
+          <button type="button" class="wiz-pip" data-goto="2">2</button>
+          <span class="wiz-rail" data-rail="2"></span>
+          <button type="button" class="wiz-pip" data-goto="3">3</button>
+        </div>
         <button id="f-undo" class="icon-btn small" disabled title="Rückgängig" aria-label="Rückgängig"><svg viewBox="0 0 24 24"><path d="M12.5 8c-2.65 0-5.05 1-6.9 2.6L2 7v9h9l-3.62-3.62A7.95 7.95 0 0 1 20.2 16l2.37-.78A10.5 10.5 0 0 0 12.5 8z"/></svg></button>
+        <button id="f-redo" class="icon-btn small morph-ui-inv" disabled title="Wiederholen" aria-label="Wiederholen"><svg viewBox="0 0 24 24"><path d="M11.5 8c2.65 0 5.05 1 6.9 2.6L22 7v9h-9l3.62-3.62A7.95 7.95 0 0 0 3.8 16l-2.37-.78A10.5 10.5 0 0 1 11.5 8z"/></svg></button>
         <button class="icon-btn small collapse-btn" aria-expanded="true" title="Minimieren" aria-label="Minimieren"><svg viewBox="0 0 24 24"><path d="M7.4 8.6 12 13.2l4.6-4.6L18 10l-6 6-6-6z"/></svg></button>
         <button id="face-close" class="icon-btn small" title="Gesicht beenden" aria-label="Gesicht beenden"><svg viewBox="0 0 24 24"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></svg></button>
       </div>
       <div class="face-body">
-        <section data-fpane="rig">
+        <section id="wiz-s1" class="wiz-pane morph-ui-inv"></section>
+        <section id="wiz-s2" class="wiz-pane morph-ui-inv hidden"></section>
+        <section id="wiz-s3" class="wiz-pane morph-ui-inv hidden"></section>
+        <section data-fpane="rig" class="morph-ui">
           <div id="f-step" class="f-step"></div>
           <div class="ed-row">
             <button id="f-prev" class="ed-btn">‹ Zurück</button>
@@ -185,7 +197,7 @@
           <label class="ed-row ed-slider"><span>Knochen-Radius</span><input id="f-bradius" type="range" min="40" max="200" step="5" value="100"><span id="f-bradius-val" class="time">100 %</span></label>
           <div id="f-rig-hint" class="ed-hint"></div>
         </section>
-        <section data-fpane="shape" class="hidden">
+        <section data-fpane="shape" class="hidden morph-ui">
           <div class="ed-row">
             <select id="f-target" class="f-select" aria-label="Form"></select>
             <button id="f-new" class="ed-btn sm2 grow0">+ Neu</button>
@@ -213,7 +225,7 @@
           <label class="ed-row ed-slider"><span>Stärke</span><input id="f-strength" type="range" min="5" max="100" step="5" value="50"><span id="f-strength-val" class="time">50 %</span></label>
           <div id="f-shape-hint" class="ed-hint"></div>
         </section>
-        <section data-fpane="gen" class="hidden">
+        <section data-fpane="gen" class="hidden morph-ui">
           <div class="ed-row">
             <button id="f-arkit" class="primary ed-export">ARKit-Formen erzeugen</button>
             <button id="f-arkit-regen" class="ed-btn sm2 grow0" title="Automatisch erzeugte Formen mit den aktuellen Punkten neu berechnen">Neu berechnen</button>
@@ -235,7 +247,7 @@
             <button id="f-vis-reset" class="ed-btn sm2">Standard</button>
           </div>
         </section>
-        <section data-fpane="test" class="hidden">
+        <section data-fpane="test" class="hidden morph-ui">
           <div id="f-emotions" class="chips"></div>
           <div class="ed-row">
             <button id="f-speak" class="ed-btn sm2 wide">🎙 Sprechtest: Audio wählen</button>
@@ -300,6 +312,8 @@
 
   <input id="file" type="file" multiple hidden>
 
+  <div id="wiz-layer" class="hidden"><svg id="wiz-lines"></svg><div id="wiz-handles"></div></div>
   <script type="module" src="app.js"></script>
+  <script type="module" src="face-wizard.js"></script>
 </body>
 </html>

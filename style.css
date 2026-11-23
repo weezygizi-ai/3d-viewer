@@ -218,3 +218,103 @@ body.face-mode .tools, body.face-mode #anim { display: none; }
 #vrm-panel .panel-title { flex: 1; font-weight: 600; font-size: 14px; }
 .vrm-list { display: flex; flex-direction: column; gap: 2px; margin: 4px 0; }
 .vrm-list .f-sname { min-width: 120px; font-size: 12.5px; }
+
+/* ---------- Vereinfachtes Gesichtsrig (3 Schritte) ---------- */
+body.face-simple .morph-ui { display: none !important; }
+body:not(.face-simple) .morph-ui-inv { display: none !important; }
+body.face-simple #face { max-height: min(42vh, 360px); }
+.wiz-title {
+  font-size: 12px; font-weight: 700; letter-spacing: .02em; color: var(--muted);
+  text-transform: uppercase; margin-right: 4px; flex: none;
+}
+.wiz-pips { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; }
+.wiz-pip {
+  width: 26px; height: 26px; border-radius: 50%; border: 1.5px solid var(--border);
+  font-size: 12px; font-weight: 700; color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; padding: 0; flex: none;
+}
+.wiz-pip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.wiz-pip.done { background: #2ecc71; color: #fff; border-color: #2ecc71; }
+.wiz-rail { flex: 1; height: 2px; background: var(--border); border-radius: 2px; min-width: 8px; }
+.wiz-rail.on { background: var(--accent); }
+.wiz-kicker { font-size: 13px; font-weight: 700; padding: 0 4px; }
+.wiz-kicker .small { font-weight: 400; margin-top: 2px; display: block; }
+.wiz-plist { display: flex; flex-direction: column; gap: 6px; }
+.wiz-pi {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 12px;
+  text-align: left; width: 100%;
+}
+.wiz-pi .wiz-n {
+  width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid var(--border);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; color: var(--muted); flex: none;
+}
+.wiz-pi .wiz-pi-lab { flex: 1; font-weight: 600; font-size: 14px; }
+.wiz-pi .wiz-pi-st { font-size: 12px; color: var(--muted); }
+.wiz-pi.current { border-color: var(--accent); background: rgba(91,124,255,.14); }
+.wiz-pi.current .wiz-n { background: var(--accent); color: #fff; border-color: var(--accent); }
+.wiz-pi.done { border-color: rgba(46,204,113,.55); }
+.wiz-pi.done .wiz-n { background: #2ecc71; color: #fff; border-color: #2ecc71; }
+.wiz-pi.done .wiz-pi-st { color: #2ecc71; }
+.wiz-sliders {
+  display: flex; flex-direction: column; gap: 0;
+  max-height: 132px; overflow-y: auto; -webkit-overflow-scrolling: touch;
+}
+.wiz-srow { display: flex; align-items: center; gap: 8px; padding: 0 4px; }
+.wiz-srow .wiz-sname {
+  flex: 0 0 38%; font-size: 12.5px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wiz-srow input[type=range] { flex: 1; min-width: 60px; accent-color: var(--accent); height: 24px; touch-action: none; }
+.wiz-srow .time { min-width: 36px; }
+.wiz-srow.active .wiz-sname { color: var(--accent); }
+#wiz-s3 .wiz-kicker .small { display: none; }
+#face.face .ed-export { padding: 9px 6px; }
+#wiz-layer { position: fixed; inset: 0; z-index: 8; pointer-events: none; }
+#wiz-layer.hidden { display: none !important; }
+#wiz-lines { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.wiz-h {
+  position: absolute; left: 0; top: 0; transform: translate(-50%, -50%);
+  pointer-events: auto; display: flex; flex-direction: column; align-items: center; z-index: 1;
+  touch-action: none;
+}
+.wiz-h.current { z-index: 3; }
+.wiz-dot {
+  width: 36px; height: 36px; border-radius: 50%; border: 2.5px solid #fff;
+  background: var(--accent); color: #fff; font-weight: 800; font-size: 14px;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 2px 10px rgba(0,0,0,.45);
+}
+.wiz-h.current .wiz-dot {
+  width: 46px; height: 46px; font-size: 18px;
+  box-shadow: 0 0 0 6px rgba(91,124,255,.28), 0 2px 12px rgba(0,0,0,.5);
+  animation: wizpulse 1.4s ease-in-out infinite;
+}
+.wiz-h.pending .wiz-dot {
+  background: rgba(22,24,29,.55); border: 2.5px dashed rgba(255,255,255,.85); color: #fff;
+}
+.wiz-h.done .wiz-dot { background: #2ecc71; border-color: #fff; }
+.wiz-lab {
+  margin-top: 5px; font-size: 11px; font-weight: 700;
+  background: rgba(22,24,29,.82); color: #fff; padding: 2px 7px; border-radius: 8px;
+  white-space: nowrap; box-shadow: 0 1px 6px rgba(0,0,0,.35); pointer-events: none;
+}
+.wiz-h.bone .wiz-dot { width: 22px; height: 22px; font-size: 0; border-width: 2px; }
+.wiz-h.bone.current .wiz-dot {
+  width: 28px; height: 28px;
+  box-shadow: 0 0 0 5px rgba(255,255,255,.22), 0 2px 10px rgba(0,0,0,.45);
+  animation: none;
+}
+.wiz-h.bone .wiz-lab { font-size: 10px; margin-top: 3px; padding: 1px 6px; font-weight: 600; }
+.wiz-h.pair-on .wiz-dot { box-shadow: 0 0 0 3px rgba(91,124,255,.35), 0 2px 8px rgba(0,0,0,.4); }
+@keyframes wizpulse {
+  0%, 100% { box-shadow: 0 0 0 6px rgba(91,124,255,.22), 0 2px 12px rgba(0,0,0,.5); }
+  50% { box-shadow: 0 0 0 11px rgba(91,124,255,.08), 0 2px 12px rgba(0,0,0,.5); }
+}
+.wiz-pane { display: flex; flex-direction: column; gap: 8px; }
+#f-tpl { flex: 1; min-width: 0; }
+
+.wiz-pane > .ed-row { flex: 0 0 auto; }
+#wiz-next1, #wiz-make, #wiz-done { height: 40px; }

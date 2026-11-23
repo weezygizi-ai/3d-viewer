@@ -83,6 +83,52 @@ for (const l of LM) {
 const LM_BY = Object.fromEntries(LM_ALL.map((l) => [l.id, l]));
 const REQUIRED = LM_ALL.filter((l) => !l.optional).map((l) => l.id);
 
+// ARKit/Visemes/Emotionen/Sprechtest im UI ausblenden, Code bleibt erreichbar.
+export const SHOW_MORPH_UI = false;
+
+const ANCHORS = [
+  { id: 'eyeL', n: 1, label: 'Linkes Auge', hint: 'Mitte der Pupille' },
+  { id: 'eyeR', n: 2, label: 'Rechtes Auge', hint: 'Mitte der Pupille' },
+  { id: 'mouthC', n: 3, label: 'Mundmitte', hint: 'Mitte der Lippen' },
+];
+
+const BONE_BASIS = [
+  { id: 'jaw', name: 'Face_Jaw', label: 'Kiefer', src: 'chin', color: '#f0a020', motion: 'jaw' },
+  { id: 'eyeL', name: 'Face_Eye_L', label: 'Auge L', src: 'eyeL', pair: 'eyeR', color: '#5b7cff', motion: 'eye' },
+  { id: 'eyeR', name: 'Face_Eye_R', label: 'Auge R', src: 'eyeR', pair: 'eyeL', color: '#5b7cff', motion: 'eye' },
+  { id: 'browL', name: 'Face_Brow_L', label: 'Braue L', src: 'browL', pair: 'browR', color: '#b57bff', motion: 'up' },
+  { id: 'browR', name: 'Face_Brow_R', label: 'Braue R', src: 'browR', pair: 'browL', color: '#b57bff', motion: 'up' },
+  { id: 'mouthL', name: 'Face_MouthCorner_L', label: 'Mundwinkel L', src: 'mouthL', pair: 'mouthR', color: '#3ec7c7', motion: 'corner' },
+  { id: 'mouthR', name: 'Face_MouthCorner_R', label: 'Mundwinkel R', src: 'mouthR', pair: 'mouthL', color: '#3ec7c7', motion: 'corner' },
+  { id: 'lipUp', name: 'Face_UpperLip', label: 'Oberlippe', src: 'lipUp', color: '#3ec7c7', motion: 'up' },
+  { id: 'lipLo', name: 'Face_LowerLip', label: 'Unterlippe', src: 'lipLo', parent: 'Face_Jaw', color: '#3ec7c7', motion: 'down' },
+  { id: 'nose', name: 'Face_Nose', label: 'Nase', src: 'nose', color: '#f0c44c', motion: 'up' },
+];
+const BONE_EXTRA = [
+  { id: 'lidUpL', name: 'Face_UpperLid_L', label: 'Oberlid L', src: 'lidUpL', pair: 'lidUpR', color: '#8fb0ff', motion: 'lidUp' },
+  { id: 'lidUpR', name: 'Face_UpperLid_R', label: 'Oberlid R', src: 'lidUpR', pair: 'lidUpL', color: '#8fb0ff', motion: 'lidUp' },
+  { id: 'lidLoL', name: 'Face_LowerLid_L', label: 'Unterlid L', src: 'lidLoL', pair: 'lidLoR', color: '#8fb0ff', motion: 'lidLo' },
+  { id: 'lidLoR', name: 'Face_LowerLid_R', label: 'Unterlid R', src: 'lidLoR', pair: 'lidLoL', color: '#8fb0ff', motion: 'lidLo' },
+  { id: 'cheekL', name: 'Face_Cheek_L', label: 'Wange L', src: 'cheekL', pair: 'cheekR', color: '#ff8bb0', motion: 'fwd' },
+  { id: 'cheekR', name: 'Face_Cheek_R', label: 'Wange R', src: 'cheekR', pair: 'cheekL', color: '#ff8bb0', motion: 'fwd' },
+  { id: 'browInL', name: 'Face_BrowIn_L', label: 'Braue innen L', src: 'browInL', pair: 'browInR', color: '#b57bff', motion: 'up' },
+  { id: 'browInR', name: 'Face_BrowIn_R', label: 'Braue innen R', src: 'browInR', pair: 'browInL', color: '#b57bff', motion: 'up' },
+  { id: 'jawL', name: 'Face_JawJoint_L', label: 'Kiefergelenk L', src: 'jawL', pair: 'jawR', color: '#f0a020', motion: 'jaw' },
+  { id: 'jawR', name: 'Face_JawJoint_R', label: 'Kiefergelenk R', src: 'jawR', pair: 'jawL', color: '#f0a020', motion: 'jaw' },
+];
+function bonesOfPreset(preset) {
+  if (preset === 'erweitert') {
+    // Braue L/R durch Braue innen/außen ersetzen, plus Extra-Knochen
+    const base = BONE_BASIS.filter((b) => b.id !== 'browL' && b.id !== 'browR');
+    const browOut = [
+      { id: 'browOutL', name: 'Face_BrowOut_L', label: 'Braue außen L', src: 'browOutL', pair: 'browOutR', color: '#b57bff', motion: 'up' },
+      { id: 'browOutR', name: 'Face_BrowOut_R', label: 'Braue außen R', src: 'browOutR', pair: 'browOutL', color: '#b57bff', motion: 'up' },
+    ];
+    return base.concat(browOut, BONE_EXTRA);
+  }
+  return BONE_BASIS.slice();
+}
+
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 const fall = (t) => (t <= 0 ? 1 : t >= 1 ? 0 : 1 - t * t * (3 - 2 * t));
 const ss = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
@@ -105,7 +151,8 @@ export function initFace(ctx) {
   const S = {
     active: false, tab: 'rig', avatar: null, host: null,
     ref: null, points: {}, step: 0, mirror: true, facing: 0,
-    undo: [], target: null, caches: new Map(), faceSet: null, mirrorReady: false,
+    undo: [], redo: [], target: null, caches: new Map(), faceSet: null, mirrorReady: false,
+    wiz: { step: 1, preset: 'basis', current: 'eyeL', sliders: {}, selected: null, created: false }, boneBind: new Map(), wizardHooks: null,
     brush: { on: false, tool: 'grab', radius: 12, strength: 50, sym: true, mesh: 'all' },
     boneScale: 1, blink: true, speak: null, tween: null, nextBlink: 2, blinkT: -1, lastEmotion: 'froh',
   };
@@ -533,6 +580,11 @@ export function initFace(ctx) {
     S.ref.obj.updateMatrixWorld(true);
     return S.ref.obj.localToWorld(p.clone());
   }
+  function retargetPoints() {
+    const worlds = {};
+    for (const id of Object.keys(S.points)) { const w = pointWorld(id); if (w) worlds[id] = w.clone(); }
+    return () => { for (const [id, w] of Object.entries(worlds)) setPointWorld(id, w); };
+  }
   function setPointWorld(id, w) {
     ensureRef();
     S.ref.obj.updateMatrixWorld(true);
@@ -541,9 +593,15 @@ export function initFace(ctx) {
   function rigComplete() { return REQUIRED.every((id) => S.points[id]); }
   // Gesichtsrahmen aus den Landmarken: X = links der Figur, Y = oben, Z = vorne; Einheit = Augenabstand
   function faceFrame() {
-    if (!rigComplete()) return null;
+    if (!rigComplete()) {
+      const F0 = typeof frameFromAnchors === 'function' ? frameFromAnchors() : null;
+      return F0 && typeof enrichFrame === 'function' ? enrichFrame(F0) : null;
+    }
     const P = {};
     for (const l of LM_ALL) { const w = pointWorld(l.id); if (w) P[l.id] = w; }
+    for (const id of ['mouthC', 'nose', 'cheekL', 'cheekR', 'browL', 'browR']) {
+      const w = pointWorld(id); if (w) P[id] = w;
+    }
     // Querachse robust: Mittel aller L/R-Paare; nahe der Kopf-Querachse -> diese (saubere Symmetrie)
     const X = new THREE.Vector3();
     for (const [l, r] of [['eyeL', 'eyeR'], ['lidUpL', 'lidUpR'], ['lidLoL', 'lidLoR'], ['browInL', 'browInR'], ['browOutL', 'browOutR'], ['mouthL', 'mouthR'], ['jawL', 'jawR']]) {
@@ -903,7 +961,7 @@ export function initFace(ctx) {
       mk.scale.setScalar(markerSize * (id === cur ? 1.5 : 1));
       mk.visible = true;
     }
-    markerGroup.visible = S.active && S.tab === 'rig';
+    markerGroup.visible = S.active && S.tab === 'rig' && SHOW_MORPH_UI;
   }
 
   // Kamera auf das Gesicht
@@ -1131,16 +1189,30 @@ export function initFace(ctx) {
   function pushUndo(label, fn) {
     S.undo.push({ label, fn });
     if (S.undo.length > 40) S.undo.shift();
+    S.redo = [];
     updateUndoBtn();
   }
   function undo() {
     const e = S.undo.pop();
     if (!e) return;
     e.fn();
+    if (e.redo) S.redo.push(e);
     invalidate(false);
     updateUndoBtn();
     refreshUI();
+    S.wizardHooks?.render?.();
     showToast(`Rückgängig: ${e.label}`, 1600);
+  }
+  function redo() {
+    const e = S.redo.pop();
+    if (!e || !e.redo) return;
+    e.redo();
+    S.undo.push(e);
+    invalidate(false);
+    updateUndoBtn();
+    refreshUI();
+    S.wizardHooks?.render?.();
+    showToast(`Wiederholt: ${e.label}`, 1600);
   }
   function snapTarget(geoms, name) {
     return geoms.map((g) => {
@@ -1667,11 +1739,19 @@ export function initFace(ctx) {
 
   // ---------------------------------------------------------------- Gesichtsknochen
   function faceBones() { const out = []; model()?.traverse((o) => { if (o.isBone && o.userData.faceBone) out.push(o); }); return out; }
-  function createFaceBones() {
+  function createFaceBones(preset) {
+    preset = preset || S.wiz.preset || 'basis';
+    if (!rigComplete()) deriveLandmarksFromAnchors();
     const F = faceFrame();
-    if (!F) { showError('Bitte zuerst alle Gesichtspunkte setzen.', 3000); return null; }
-    const hb = findHeadBone() || (S.ref?.type === 'bone' ? S.ref.obj : null);
-    if (!hb || !allMeshes().some((m) => m.isSkinnedMesh && m.skeleton?.bones.includes(hb))) { showError('Kein Kopf-Knochen in einem geskinnten Mesh gefunden – Gesichtsknochen brauchen ein Skelett. Morphs funktionieren trotzdem.', 4500); return null; }
+    if (!F) { showError('Bitte zuerst die 3 Gesichtspunkte setzen.', 3000); return null; }
+    let hb = findHeadBone() || (S.ref?.type === 'bone' ? S.ref.obj : null);
+    if (!hb || !allMeshes().some((m) => m.isSkinnedMesh && m.skeleton?.bones.includes(hb))) {
+      hb = ensureFaceSkeleton();
+    }
+    if (!hb || !allMeshes().some((m) => m.isSkinnedMesh && m.skeleton?.bones.includes(hb))) {
+      showError('Kein Kopf-Knochen in einem geskinnten Mesh gefunden – Gesichtsknochen brauchen ein Skelett. Morphs funktionieren trotzdem.', 4500);
+      return null;
+    }
     if (faceBones().length) { showError('Gesichtsknochen gibt es schon. Zum Neu-Erzeugen erst „Entfernen“.', 3500); return null; }
     const G = regions(F), roles = classify(F), L = F.L;
     const W = (f) => F.toW(f).add(F.O);
@@ -1684,7 +1764,7 @@ export function initFace(ctx) {
       const p = e.phi(q), pc = e.pL + 0.22 * e.ap;
       return upper ? (p >= pc ? e.wUp(q, p) * reg : 0) : (p < pc ? e.wLo(q, p) * reg : 0);
     };
-    const defs = [
+    let defs = [
       { name: 'Face_Jaw', pos: F.J, tail: L.chin, fn: (q, r) => G.wJaw(q, r) },
     ];
     for (const s of ['L', 'R']) {
@@ -1703,6 +1783,16 @@ export function initFace(ctx) {
       { name: 'Face_LowerLip', parent: 'Face_Jaw', pos: off(L.lipLo, [0, 0, -0.05]), tail: off(L.lipLo, [0, -0.1, -0.05]), fn: (q, r) => (MAIN(r) ? ell(q, L.lipLo, F.mouthHalfW * 0.85, 0.22, 0.35) * G.lower(q) : 0) },
     );
     if (L.tongue) defs.push({ name: 'Face_Tongue', parent: 'Face_Jaw', pos: L.tongue, tail: off(L.tongue, [0, 0, -0.3]), fn: (q, r) => (r === 'tongue' ? 1 : 0) });
+    // Nase + Wangen (neue Knochen)
+    if (L.nose) defs.push({ name: 'Face_Nose', pos: off(L.nose, [0, 0, -0.04]), tail: off(L.nose, [0, 0.1, 0.02]), radius: R(0.2) });
+    if (L.cheekL) defs.push({ name: 'Face_Cheek_L', pos: off(L.cheekL, [0, 0, -0.05]), tail: off(L.cheekL, [0.08, 0, -0.04]), radius: R(0.26) });
+    if (L.cheekR) defs.push({ name: 'Face_Cheek_R', pos: off(L.cheekR, [0, 0, -0.05]), tail: off(L.cheekR, [-0.08, 0, -0.04]), radius: R(0.26) });
+    if (L.browL) defs.push({ name: 'Face_Brow_L', pos: off(L.browL, [0, 0, -0.04]), tail: off(L.browL, [0.1, 0, -0.04]), radius: R(0.26) });
+    if (L.browR) defs.push({ name: 'Face_Brow_R', pos: off(L.browR, [0, 0, -0.04]), tail: off(L.browR, [-0.1, 0, -0.04]), radius: R(0.26) });
+    if (L.jawL) defs.push({ name: 'Face_JawJoint_L', pos: L.jawL, tail: off(L.jawL, [0.05, -0.1, 0]), radius: R(0.22) });
+    if (L.jawR) defs.push({ name: 'Face_JawJoint_R', pos: L.jawR, tail: off(L.jawR, [-0.05, -0.1, 0]), radius: R(0.22) });
+    const want = new Set(bonesOfPreset(preset).map((b) => b.name));
+    if (want.size) defs = defs.filter((d) => want.has(d.name) && d.pos && d.tail);
     const made = new Map();
     const fns = new Map(), radii = new Map();
     for (const d of defs) {
@@ -1717,7 +1807,11 @@ export function initFace(ctx) {
     editor.computeWeights(bones, { silent: true, fnFor: (b) => fns.get(b), radiusFor: (b) => radii.get(b) });
     invalidate(true);
     showToast(`${bones.length} Gesichtsknochen erzeugt und gewichtet.`);
+    S.wiz.created = true;
+    S.wiz.sliders = {};
+    captureBoneBind();
     updateRigUI();
+    S.wizardHooks?.render?.();
     return bones.map((b) => b.name);
   }
   function removeFaceBones() {
@@ -1725,7 +1819,11 @@ export function initFace(ctx) {
     for (const b of tops) editor.deleteBoneRef(b);
     editor.structureChanged();
     invalidate(true);
+    S.wiz.created = false;
+    S.wiz.sliders = {};
+    S.boneBind = new Map();
     updateRigUI();
+    S.wizardHooks?.render?.();
   }
 
   // ---------------------------------------------------------------- Emotionen / Werte
@@ -1853,7 +1951,10 @@ export function initFace(ctx) {
 
   // ---------------------------------------------------------------- UI
   const el = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt !== undefined) e.textContent = txt; return e; };
-  function updateUndoBtn() { const b = $('#f-undo'); if (b) b.disabled = !S.undo.length; }
+  function updateUndoBtn() {
+    const b = $('#f-undo'); if (b) b.disabled = !S.undo.length;
+    const r = $('#f-redo'); if (r) r.disabled = !S.redo.length;
+  }
   function setTab(t) {
     S.tab = t;
     document.querySelectorAll('[data-ftab]').forEach((b) => b.classList.toggle('active', b.dataset.ftab === t));
@@ -2128,16 +2229,29 @@ export function initFace(ctx) {
     S.active = true;
     S.faceSet = null;
     ensureRef();
-    if (!Object.keys(S.points).length) autoPlace(true), (S.undo = []);
+    if (SHOW_MORPH_UI) {
+      if (!Object.keys(S.points).length) autoPlace(true), (S.undo = []);
+    } else {
+      document.body.classList.add('face-simple');
+      S.wiz.step = 1;
+      S.tab = 'rig';
+      if (!anchorsComplete()) { autoDetectAnchors(true); S.undo = []; S.redo = []; }
+    }
     document.body.classList.add('editing', 'face-mode');
-    $('#face').classList.remove('hidden');
+    $('#face').classList.remove('hidden', 'collapsed');
+    $('#face .collapse-btn')?.setAttribute('aria-expanded', 'true');
     $('#anim').classList.add('hidden');
     ctx.setToolActive('face', true);
     updateMarkers(true);
     setTab(S.tab);
-    frameFace(currentStep().side ? 'side' : 'front');
-    const n = Object.keys(detectArkit()).length;
-    if (n) showToast(`${n} ARKit-Formen erkannt.`, 2500);
+    frameFace('front');
+    if (SHOW_MORPH_UI) {
+      const n = Object.keys(detectArkit()).length;
+      if (n) showToast(`${n} ARKit-Formen erkannt.`, 2500);
+    } else {
+      S.wizardHooks?.render?.();
+      if (anchorsComplete()) showToast('3 Punkte vorgeschlagen – bitte prüfen, dann weiter.', 2500);
+    }
   }
   function exit(silent) {
     if (!S.active && !silent) return;
@@ -2150,9 +2264,10 @@ export function initFace(ctx) {
     controls.enabled = true;
     ring.visible = false;
     markerGroup.visible = false;
-    document.body.classList.remove('face-mode');
+    document.body.classList.remove('face-mode', 'face-simple');
     if (!editor.active) document.body.classList.remove('editing');
     $('#face')?.classList.add('hidden');
+    $('#wiz-layer')?.classList.add('hidden');
     ctx.setToolActive('face', false);
     if (was) {
       ctx.refreshInfo?.();
@@ -2174,12 +2289,340 @@ export function initFace(ctx) {
     if (S.speak) speechFrame();
     if (S.tab === 'test' && S.blink) blinkFrame(dt);
     if (S.tab === 'rig') updateMarkers(false);
+    if (!SHOW_MORPH_UI && S.active) S.wizardHooks?.updateHandles?.();
   }
+
+  // ---------------------------------------------------------------- 3-Punkte-Rahmen, Ableitung, Skelett, Vorlagen
+
+  function mouthCenterWorld() {
+    const c = pointWorld('mouthC');
+    if (c) return c;
+    const a = pointWorld('mouthL'), b = pointWorld('mouthR');
+    if (a && b) return a.clone().add(b).multiplyScalar(0.5);
+    const u = pointWorld('lipUp'), l = pointWorld('lipLo');
+    if (u && l) return u.clone().add(l).multiplyScalar(0.5);
+    return null;
+  }
+  function anchorsComplete() { return !!(pointWorld('eyeL') && pointWorld('eyeR') && mouthCenterWorld()); }
+  function mid3(a, b) { return a.clone().add(b).multiplyScalar(0.5); }
+
+  function frameFromAnchors() {
+    const eyeL = pointWorld('eyeL'), eyeR = pointWorld('eyeR'), mouth = mouthCenterWorld();
+    if (!eyeL || !eyeR || !mouth) return null;
+    const X = eyeL.clone().sub(eyeR);
+    if (X.lengthSq() < 1e-12) return null;
+    X.normalize();
+    try { const hx = headInfo()?.X; if (hx && X.angleTo(hx) < 0.35) X.copy(hx).normalize(); } catch (e) { /* ok */ }
+    const s = Math.abs(eyeL.clone().sub(eyeR).dot(X));
+    if (s < 1e-9) return null;
+    const eyesC = mid3(eyeL, eyeR);
+    const Y = eyesC.clone().sub(mouth);
+    Y.addScaledVector(X, -Y.dot(X));
+    if (Y.lengthSq() < 1e-12) Y.copy(headInfo().Y);
+    Y.normalize();
+    const Z = new THREE.Vector3().crossVectors(X, Y).normalize();
+    const O = eyesC;
+    const toF = (w) => { _w.copy(w).sub(O); return [_w.dot(X) / s, _w.dot(Y) / s, _w.dot(Z) / s]; };
+    const toW = (d) => new THREE.Vector3().addScaledVector(X, d[0] * s).addScaledVector(Y, d[1] * s).addScaledVector(Z, d[2] * s);
+    return { X, Y, Z, O, s, toF, toW, eyesC, mouth };
+  }
+
+  function enrichFrame(F) {
+    const P = {};
+    for (const l of LM_ALL) { const w = pointWorld(l.id); if (w) P[l.id] = w; }
+    const extra = ['mouthC', 'nose', 'cheekL', 'cheekR', 'browL', 'browR'];
+    for (const id of extra) { const w = pointWorld(id); if (w) P[id] = w; }
+    const L = {};
+    for (const k in P) L[k] = F.toF(P[k]);
+    F.P = P; F.L = L;
+    const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+    if (L.mouthL && L.mouthR) F.mc = mid(L.mouthL, L.mouthR);
+    else if (L.mouthC) F.mc = L.mouthC.slice();
+    else F.mc = F.toF(F.mouth || F.O);
+    F.ySplit = (L.lipUp && L.lipLo) ? (L.lipUp[1] + L.lipLo[1]) / 2 : F.mc[1];
+    F.mouthHalfW = L.mouthL && L.mouthR ? Math.max(0.15, Math.abs(L.mouthL[0] - L.mouthR[0]) / 2) : 0.4;
+    F.J = L.jawL && L.jawR ? mid(L.jawL, L.jawR) : [0, F.mc[1] + 0.5, F.mc[2] - 1.35];
+    F.jawHalfW = L.jawL && L.jawR ? Math.max(0.6, Math.abs(L.jawL[0] - L.jawR[0]) / 2) : 1.1;
+    if (L.eyeL) F.pivot = { L: [L.eyeL[0], L.eyeL[1], L.eyeL[2] - 0.2], R: L.eyeR ? [L.eyeR[0], L.eyeR[1], L.eyeR[2] - 0.2] : [0, 0, 0] };
+    else F.pivot = { L: [0.5, 0, -0.2], R: [-0.5, 0, -0.2] };
+    return F;
+  }
+
+  function faceFrameAnchorsOrFull() {
+    if (rigComplete()) return faceFrameFull();
+    const F = frameFromAnchors();
+    return F ? enrichFrame(F) : null;
+  }
+
+  function snapWorld(from, dir) {
+    const hit = raycast(new THREE.Ray(from, dir.clone().normalize()), visibleMeshes());
+    return hit ? hit.point : null;
+  }
+
+  function deriveLandmarksFromAnchors() {
+    const F = frameFromAnchors();
+    if (!F) return false;
+    const eyeL = F.toF(pointWorld('eyeL')), eyeR = F.toF(pointWorld('eyeR')), mc = F.toF(mouthCenterWorld());
+    const sL = (id, f) => {
+      const start = F.toW([f[0], f[1], f[2] + 0.8]).add(F.O);
+      const hit = snapWorld(start, F.Z.clone().negate());
+      setPointWorld(id, hit || F.toW(f).add(F.O));
+    };
+    // Paare und Mitte aus den 3 Ankern, in Gesichtseinheiten
+    const my = mc[1], mz = mc[2];
+    const ex = Math.abs(eyeL[0]);
+    const map = {
+      mouthC: mc,
+      lidUpL: [eyeL[0], eyeL[1] + 0.16, eyeL[2]], lidUpR: [eyeR[0], eyeR[1] + 0.16, eyeR[2]],
+      lidLoL: [eyeL[0], eyeL[1] - 0.14, eyeL[2]], lidLoR: [eyeR[0], eyeR[1] - 0.14, eyeR[2]],
+      browInL: [eyeL[0] * 0.4, eyeL[1] + 0.42, eyeL[2]], browInR: [eyeR[0] * 0.4, eyeR[1] + 0.42, eyeR[2]],
+      browOutL: [eyeL[0] * 1.35, eyeL[1] + 0.38, eyeL[2]], browOutR: [eyeR[0] * 1.35, eyeR[1] + 0.38, eyeR[2]],
+      browL: [eyeL[0] * 0.9, eyeL[1] + 0.4, eyeL[2]], browR: [eyeR[0] * 0.9, eyeR[1] + 0.4, eyeR[2]],
+      mouthL: [Math.max(0.28, ex * 0.7), my, mz], mouthR: [-Math.max(0.28, ex * 0.7), my, mz],
+      lipUp: [0, my + 0.12, mz + 0.02], lipLo: [0, my - 0.12, mz + 0.02],
+      chin: [0, my - 0.62, mz - 0.05],
+      nose: [0, my * 0.42, 0.45],
+      cheekL: [ex * 0.95, my * 0.45, 0.15], cheekR: [-ex * 0.95, my * 0.45, 0.15],
+      jawL: [ex * 1.55, my + 0.25, -1.05], jawR: [-ex * 1.55, my + 0.25, -1.05],
+    };
+    for (const [id, f] of Object.entries(map)) sL(id, f);
+    rigChanged();
+    return true;
+  }
+
+  function autoDetectAnchors(silent) {
+    const before = snapshotPoints();
+    const ok = autoPlace(true);
+    const mL = pointWorld('mouthL'), mR = pointWorld('mouthR');
+    if (mL && mR) setPointWorld('mouthC', mid3(mL, mR));
+    else if (!pointWorld('mouthC')) {
+      const u = pointWorld('lipUp'), l = pointWorld('lipLo');
+      if (u && l) setPointWorld('mouthC', mid3(u, l));
+    }
+    const after = snapshotPoints();
+    if (!silent) {
+      // autoPlace hat schon einen Undo-Eintrag – durch unseren ersetzen
+      if (S.undo.length && S.undo[S.undo.length - 1].label === 'Auto-Platzierung') S.undo.pop();
+      pushHist('Auto-Erkennen', () => { restorePoints(before); rigChanged(); }, () => { restorePoints(after); rigChanged(); });
+      showToast(ok ? 'Augen und Mund automatisch erkannt – bitte prüfen und bei Bedarf verschieben.' : 'Grob geschätzt – bitte die 3 Punkte prüfen und verschieben.');
+    }
+    rigChanged();
+    return anchorsComplete();
+  }
+
+  function ensureFaceSkeleton() {
+    const hb = findHeadBone();
+    if (hb && allMeshes().some((m) => m.isSkinnedMesh && m.skeleton?.bones.includes(hb))) return hb;
+    // Vorhandenes Skelett ohne „Head“: nächsten geeigneten Knochen nehmen (Hals/Wirbelsäule/Wurzel)
+    const bones = [];
+    model()?.traverse((o) => { if (o.isBone && !o.userData.faceBone) bones.push(o); });
+    if (bones.length) {
+      const score = (b) => {
+        const n = b.name.replace(/mixamorig\d*[:_]?/i, '');
+        if (/(neck|hals)/i.test(n)) return 2;
+        if (/(spine|wirbel)/i.test(n)) return 1;
+        return 0;
+      };
+      const cand = bones.slice().sort((a, b) => score(b) - score(a) || a.id - b.id);
+      const parent = cand[0];
+      // Wenn es geskinnte Meshes gibt, Head-Knochen unter parent anlegen
+      if (allMeshes().some((m) => m.isSkinnedMesh && m.skeleton)) {
+        const F = frameFromAnchors() || faceFrame();
+        const pos = F ? F.O.clone() : parent.getWorldPosition(new THREE.Vector3());
+        const head = editor.addBoneAt(parent, pos, 'Head', { tail: F ? F.toW([0, 0.4, 0]).add(F.O) : pos.clone() });
+        if (head) { delete head.userData.viewerAdded; head.userData.faceRoot = true; const restore = retargetPoints(); S.head = null; S.ref = null; ensureRef(); restore(); editor.structureChanged(); return head; }
+      }
+    }
+    // Ungeskinntes Mesh (z. B. Kopf-Scan) -> SkinnedMesh + Head-Knochen
+    const meshes = visibleMeshes().filter((m) => !m.isSkinnedMesh);
+    if (!meshes.length) { showError('Kein Mesh gefunden, das geskinnt werden kann.', 3000); return null; }
+    const restorePts = retargetPoints(); // Weltpunkte sichern, solange der alte Ref noch stimmt
+    const root = new THREE.Bone();
+    root.name = 'Head';
+    root.userData.faceRoot = true;
+    const F = frameFromAnchors() || faceFrame();
+    const pos = F ? F.O.clone() : headInfo().center;
+    const converted = [];
+    let shared = null;
+    for (const mesh of meshes) {
+      const geo = mesh.geometry.index ? mesh.geometry : mesh.geometry;
+      if (!geo.attributes.skinIndex) {
+        const n = geo.attributes.position.count;
+        const idx = new Uint16Array(n * 4), wt = new Float32Array(n * 4);
+        for (let i = 0; i < n; i++) { idx[i * 4] = 0; wt[i * 4] = 1; }
+        geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(idx, 4));
+        geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(wt, 4));
+      }
+      const sm = new THREE.SkinnedMesh(geo, mesh.material);
+      sm.name = mesh.name;
+      sm.position.copy(mesh.position);
+      sm.quaternion.copy(mesh.quaternion);
+      sm.scale.copy(mesh.scale);
+      sm.castShadow = mesh.castShadow;
+      sm.receiveShadow = mesh.receiveShadow;
+      sm.frustumCulled = mesh.frustumCulled;
+      sm.renderOrder = mesh.renderOrder;
+      sm.morphTargetInfluences = mesh.morphTargetInfluences;
+      sm.morphTargetDictionary = mesh.morphTargetDictionary;
+      sm.userData = { ...mesh.userData, viewerSkinned: true };
+      const par = mesh.parent;
+      par.add(sm);
+      sm.updateMatrixWorld(true);
+      if (!shared) {
+        sm.add(root);
+        root.position.copy(sm.worldToLocal(pos.clone()));
+        root.updateMatrixWorld(true);
+        shared = new THREE.Skeleton([root]);
+      }
+      sm.bind(shared);
+      par.remove(mesh);
+      converted.push(sm);
+    }
+    editor.structureChanged();
+    S.head = null; S.ref = null; S.caches.clear(); S.faceSet = null;
+    invalidate(true);
+    ensureRef();
+    restorePts();
+    showToast('Kopf-Skelett angelegt, damit Gesichtsknochen gewichtet werden können.', 2500);
+    return root;
+  }
+
+  function captureBoneBind() {
+    S.boneBind = new Map();
+    for (const b of faceBones()) S.boneBind.set(b.name, { p: b.position.clone(), q: b.quaternion.clone(), s: b.scale.clone() });
+  }
+  function resetBonePoses() {
+    for (const b of faceBones()) {
+      const bind = S.boneBind.get(b.name);
+      if (!bind) continue;
+      b.position.copy(bind.p); b.quaternion.copy(bind.q); b.scale.copy(bind.s); b.updateMatrixWorld(true);
+    }
+  }
+  function poseBoneFromSlider(def, t) {
+    const b = faceBones().find((x) => x.name === def.name);
+    const bind = b && S.boneBind.get(def.name);
+    if (!b || !bind) return;
+    b.position.copy(bind.p); b.quaternion.copy(bind.q); b.scale.copy(bind.s);
+    b.updateMatrixWorld(true);
+    if (!t) { b.updateMatrixWorld(true); return; }
+    const F = faceFrame();
+    if (!F) return;
+    const parent = b.parent; parent.updateMatrixWorld(true);
+    const wpos = b.getWorldPosition(new THREE.Vector3());
+    const wquat = b.getWorldQuaternion(new THREE.Quaternion());
+    const motion = def.motion;
+    const sgn = /_R$|R$/.test(def.name) ? -1 : 1;
+    if (motion === 'jaw') {
+      const pivot = F.toW(F.J).add(F.O);
+      const ang = -t * 0.38;
+      wpos.sub(pivot).applyAxisAngle(F.X, ang).add(pivot);
+      wquat.premultiply(new THREE.Quaternion().setFromAxisAngle(F.X, ang));
+    } else {
+      let dir = F.Y, amt = F.s * 0.16 * t;
+      if (motion === 'down') { dir = F.Y.clone().negate(); }
+      else if (motion === 'fwd') { dir = F.Z; amt = F.s * 0.12 * t; }
+      else if (motion === 'corner') {
+        dir = F.X.clone().multiplyScalar(sgn).addScaledVector(F.Y, 0.6).addScaledVector(F.Z, -0.2).normalize();
+        amt = F.s * 0.18 * t;
+      } else if (motion === 'lidUp') { dir = F.Y; amt = F.s * 0.08 * t; }
+      else if (motion === 'lidLo') { dir = F.Y.clone().negate(); amt = F.s * 0.07 * t; }
+      else if (motion === 'eye') {
+        const ang = t * 0.28;
+        wquat.premultiply(new THREE.Quaternion().setFromAxisAngle(F.X, -ang));
+        amt = 0;
+      }
+      if (amt) wpos.addScaledVector(dir, amt);
+    }
+    const inv = parent.matrixWorld.clone().invert();
+    b.position.copy(wpos).applyMatrix4(inv);
+    const pq = parent.getWorldQuaternion(new THREE.Quaternion());
+    b.quaternion.copy(pq.invert().multiply(wquat));
+    b.updateMatrixWorld(true);
+  }
+  function applyBoneSliders() {
+    resetBonePoses();
+    const list = bonesOfPreset(S.wiz.preset);
+    for (const def of list) poseBoneFromSlider(def, S.wiz.sliders[def.id] || 0);
+  }
+
+  // Vorlagen (eigene IndexedDB, unabhängig von „Meine Modelle“)
+  const TPL_DB = '3d-viewer-face-templates', TPL_STORE = 'templates';
+  function tplDb() {
+    return new Promise((resolve, reject) => {
+      const r = indexedDB.open(TPL_DB, 1);
+      r.onupgradeneeded = () => r.result.createObjectStore(TPL_STORE, { keyPath: 'id', autoIncrement: true });
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+    });
+  }
+  const tplReq = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  async function listTemplates() {
+    const d = await tplDb();
+    return new Promise((resolve, reject) => {
+      const t = d.transaction(TPL_STORE, 'readonly');
+      const r = t.objectStore(TPL_STORE).getAll();
+      r.onsuccess = () => resolve((r.result || []).sort((a, b) => b.date - a.date));
+      r.onerror = () => reject(r.error);
+    });
+  }
+  async function saveTemplate(name) {
+    const F = faceFrame();
+    if (!F || !anchorsComplete()) { showError('Bitte zuerst die 3 Punkte setzen.', 2500); return null; }
+    const points = {};
+    for (const [id, loc] of Object.entries(S.points)) {
+      const w = pointWorld(id);
+      if (w) points[id] = F.toF(w);
+    }
+    const rec = { name: (name || 'Vorlage').trim(), date: Date.now(), preset: S.wiz.preset, points };
+    const d = await tplDb();
+    return new Promise((resolve, reject) => {
+      const t = d.transaction(TPL_STORE, 'readwrite');
+      const r = t.objectStore(TPL_STORE).add(rec);
+      r.onsuccess = () => { showToast(`Vorlage „${rec.name}“ gespeichert.`); resolve({ ...rec, id: r.result }); };
+      r.onerror = () => reject(r.error);
+    });
+  }
+  async function deleteTemplate(id) {
+    const d = await tplDb();
+    return new Promise((resolve, reject) => {
+      const t = d.transaction(TPL_STORE, 'readwrite');
+      const r = t.objectStore(TPL_STORE).delete(id);
+      r.onsuccess = () => resolve(true);
+      r.onerror = () => reject(r.error);
+    });
+  }
+  function applyTemplate(rec) {
+    if (!rec?.points) return false;
+    if (!anchorsComplete()) autoDetectAnchors(true);
+    const F = frameFromAnchors() || faceFrame();
+    if (!F) { showError('Bitte zuerst Augen und Mund setzen.', 2500); return false; }
+    const before = snapshotPoints();
+    for (const [id, f] of Object.entries(rec.points)) {
+      const goal = F.toW(f).add(F.O);
+      const start = goal.clone().addScaledVector(F.Z, F.s * 0.8);
+      const hit = snapWorld(start, F.Z.clone().negate());
+      setPointWorld(id, hit || goal);
+    }
+    if (rec.preset) S.wiz.preset = rec.preset;
+    rigChanged();
+    pushHist('Vorlage angewendet', () => { restorePoints(before); rigChanged(); }, () => applyTemplate(rec));
+    showToast(`Vorlage „${rec.name}“ angewendet – bitte prüfen.`);
+    return true;
+  }
+
+  function pushHist(label, undoFn, redoFn) {
+    S.undo.push({ label, fn: undoFn, redo: redoFn });
+    if (S.undo.length > 40) S.undo.shift();
+    S.redo = [];
+    updateUndoBtn();
+  }
+
 
   // ---------------------------------------------------------------- Bedienelemente verdrahten
   document.querySelectorAll('[data-ftab]').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.ftab)));
   $('#face-close').addEventListener('click', () => exit());
   $('#f-undo').addEventListener('click', undo);
+  $('#f-redo')?.addEventListener('click', redo);
   $('#f-prev').addEventListener('click', () => { const was = currentStep().side; S.step--; updateRigUI(); if (!!currentStep().side !== !!was) frameFace(currentStep().side ? 'side' : 'front'); });
   $('#f-next').addEventListener('click', () => {
     const st = steps();
@@ -2257,7 +2700,15 @@ export function initFace(ctx) {
     rigComplete, generateArkit, bakeVisemes, createTarget, deleteTarget, renameTarget, mirrorTarget, clearTarget, selectTarget,
     strokeAt: (pts, tool) => strokeAt(pts.map((p) => new THREE.Vector3(...p)), tool),
     setInfluence, getInfluence, targetNames, detectArkit, detectVisemes, applyEmotion, applyValues, saveEmotion,
-    createFaceBones, removeFaceBones, faceBones: () => faceBones().map((b) => b.name), undo, frameFace,
+    createFaceBones, removeFaceBones, faceBones: () => faceBones().map((b) => b.name), undo, redo, frameFace,
+    SHOW_MORPH_UI, ANCHORS, bonesOfPreset, anchorsComplete, rigComplete, autoDetectAnchors, deriveLandmarksFromAnchors,
+    ensureFaceSkeleton, applyBoneSliders, captureBoneBind, listTemplates, saveTemplate, deleteTemplate, applyTemplate,
+    pushHist, mouthCenterWorld, pointWorld, setPointWorld, placePoint, snapshotPoints, restorePoints, rigChanged,
+    get wiz() { return S.wiz; },
+    setWiz(p) { Object.assign(S.wiz, p); },
+    slider(id, v) { S.wiz.sliders[id] = v; applyBoneSliders(); },
+    pick(e) { return raycast(pointerRay(e), visibleMeshes()); },
+    setWizardHooks(h) { S.wizardHooks = h; },
     classify: () => { const F = faceFrame(); return F ? [...classify(F)].map(([m, r]) => [m.name, r]) : []; },
     _mirror: () => { buildMirror(); return S.mirrorMeshes.map((m) => { const c = cache(m); let k = 0; for (let i = 0; i < c.n; i++) if (c.pm[i] >= 0) k++; return [m.name, c.n, k, faceSize()]; }); },
     _profile: () => S.lastProfile, _profileResult: () => S.lastProfileResult, _head: () => { const h = headInfo(); return { mn: h.mn, mx: h.mx, W: h.W }; },
