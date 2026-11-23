@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>3D Viewer</title>
-  <meta name="description" content="GLB-, GLTF- und FBX-Modelle direkt auf dem iPhone ansehen – kostenlos, offline, ohne Upload.">
+  <meta name="description" content="GLB-, GLTF-, FBX- und VRM-Modelle direkt auf dem iPhone ansehen – kostenlos, offline, ohne Upload.">
   <meta name="theme-color" content="#16181d">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
@@ -20,7 +20,8 @@
   {
     "imports": {
       "three": "./vendor/three/three.module.min.js",
-      "three/addons/": "./vendor/three/jsm/"
+      "three/addons/": "./vendor/three/jsm/",
+      "three-vrm": "./vendor/three-vrm/three-vrm.module.min.js"
     }
   }
   </script>
@@ -33,7 +34,7 @@
   <section id="welcome" class="center-card">
     <img src="icons/icon.svg" alt="" width="72" height="72">
     <h1>3D Viewer</h1>
-    <p>Öffne GLB-, GLTF- oder FBX-Dateien. Alles bleibt auf deinem Gerät – nichts wird hochgeladen.</p>
+    <p>Öffne GLB-, GLTF-, FBX- oder VRM-Dateien. Alles bleibt auf deinem Gerät – nichts wird hochgeladen.</p>
     <button class="primary big" data-action="open">Datei öffnen</button>
     <button class="secondary big" data-action="library">Meine Modelle</button>
     <p class="small">Tipp: Bei GLTF mit separaten .bin- und Textur-Dateien alle zusammen auswählen. Am Computer kannst du Dateien auch einfach hineinziehen.</p>
@@ -125,6 +126,27 @@
       <div class="ed-row">
         <button id="ed-reset-joint" class="ed-btn wide">Gelenk zurücksetzen</button>
         <button id="ed-reset-pose" class="ed-btn wide">Pose zurücksetzen</button>
+      </div>
+      <div class="ed-row">
+        <button class="primary ed-export" data-action="export">Als GLB herunterladen</button>
+        <button class="secondary ed-export" data-action="save">In App speichern</button>
+      </div>
+    </div>
+    <div id="vrm-panel" class="editor collapsible hidden">
+      <div class="ed-row panel-head">
+        <span class="panel-title">VRM-Ausdrücke</span>
+        <button class="icon-btn small collapse-btn" aria-expanded="true" title="Minimieren" aria-label="Minimieren"><svg viewBox="0 0 24 24"><path d="M7.4 8.6 12 13.2l4.6-4.6L18 10l-6 6-6-6z"/></svg></button>
+        <button id="vrm-close" class="icon-btn small" aria-label="Schließen" title="Schließen"><svg viewBox="0 0 24 24"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></svg></button>
+      </div>
+      <div id="vrm-meta" class="ed-hint"></div>
+      <div class="ed-row">
+        <button id="vrm-blink" class="ed-btn toggle sm2" title="Automatisch blinzeln"><span class="dot"></span>Auto-Blinzeln</button>
+        <button id="vrm-springs" class="ed-btn toggle sm2 active" title="Haare/Kleidung schwingen (Spring Bones)"><span class="dot"></span>Spring Bones</button>
+        <button id="vrm-zero" class="ed-btn sm2">Alle auf 0</button>
+      </div>
+      <div id="vrm-list" class="vrm-list"></div>
+      <div class="ed-row">
+        <button id="vrm-bake" class="ed-btn wide sm2" title="VRM-Ausdrücke als benannte Morph-Targets speichern, damit sie im GLB-Export erhalten bleiben">Als Morphs übernehmen (für GLB)</button>
       </div>
       <div class="ed-row">
         <button class="primary ed-export" data-action="export">Als GLB herunterladen</button>
@@ -241,6 +263,7 @@
       <button class="tool" data-action="bg"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18V3z"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/></svg><span>Hell/Dunkel</span></button>
       <button class="tool" data-action="edit" data-toggle><svg viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.5"/><circle cx="12" cy="10" r="2.5"/><circle cx="19" cy="5" r="2.5"/><path d="M6 18l6-8 7-5" stroke="currentColor" stroke-width="2" fill="none"/></svg><span>Gelenke</span></button>
       <button class="tool" data-action="face" data-toggle><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm-3.5-9a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zm7 0a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM12 17.5c2.3 0 4.3-1.4 5.1-3.5H6.9c.8 2.1 2.8 3.5 5.1 3.5z"/></svg><span>Gesicht</span></button>
+      <button id="vrm-tool" class="tool hidden" data-action="vrm" data-toggle><svg viewBox="0 0 24 24"><path d="M12 2a5 5 0 0 1 5 5v1a5 5 0 0 1-10 0V7a5 5 0 0 1 5-5zm-2.5 6.2a1 1 0 1 0 0-2 1 1 0 0 0 0 2zm5 0a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM12 11c1 0 1.8-.5 2.2-1.2H9.8C10.2 10.5 11 11 12 11zM4 22c0-4 3.6-7 8-7s8 3 8 7H4z"/></svg><span>VRM</span></button>
       <button class="tool" data-action="fullscreen"><svg viewBox="0 0 24 24"><path d="M4 4h6v2H6v4H4V4zm10 0h6v6h-2V6h-4V4zM4 14h2v4h4v2H4v-6zm14 0h2v6h-6v-2h4v-4z"/></svg><span>Vollbild</span></button>
     </nav>
   </footer>
